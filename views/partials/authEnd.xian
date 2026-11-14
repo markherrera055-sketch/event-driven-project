@@ -1,0 +1,7 @@
+    </div>
+  </main>
+  <p class="lobby-foot">Reservations <span aria-hidden="true">·</span> Check-in <span aria-hidden="true">·</span> Billing <span aria-hidden="true">·</span> Checkout</p>
+</div>
+{{#if script}}<script type="module" src="/js/pages/{{script}}.js"></script>{{/if}}
+</body>
+</html>

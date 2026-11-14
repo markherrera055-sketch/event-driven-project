@@ -1,0 +1,9 @@
+{{> head}}
+{{> body}}
+<div class="app">
+  {{> sidebar}}
+  <main class="main">
+    {{> topbar}}
+    <div class="content">
+      {{#each error_msg}}<div class="alert alert-danger">{{this}}</div>{{/each}}
+      {{#each success_msg}}<div class="alert alert-success">{{this}}</div>{{/each}}

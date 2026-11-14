@@ -1,0 +1,7 @@
+{{> layoutStart}}
+<div class="page-head">
+  <div><div class="breadcrumb no-print"><a href="/front-desk/in-house">In-house</a> /</div><h1>Official receipt</h1><p></p></div>
+  <div class="page-actions" id="page-actions"><button class="btn" id="print">Print</button></div>
+</div>
+<div id="page-root"><div class="loading"><span class="spinner"></span>Loading…</div></div>
+{{> layoutEnd}}

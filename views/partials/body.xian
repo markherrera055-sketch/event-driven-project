@@ -1,0 +1,1 @@
+<body data-page="{{page}}" data-csrf="{{csrfToken}}" data-role="{{currentUser.role}}" data-user-id="{{currentUser.id}}" data-entity-id="{{entityId}}" data-currency="{{currency}}" data-password-change="{{#if currentUser.mustChangePassword}}required{{/if}}">

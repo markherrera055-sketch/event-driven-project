@@ -1,0 +1,7 @@
+{{> layoutStart}}
+<div class="page-head">
+  <div><h1>Rooms &amp; housekeeping</h1><p>Live room status and cleaning readiness</p></div>
+  <div class="page-actions" id="page-actions"></div>
+</div>
+<div id="page-root"><div class="loading"><span class="spinner"></span>Loading…</div></div>
+{{> layoutEnd}}

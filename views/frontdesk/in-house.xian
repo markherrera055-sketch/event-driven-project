@@ -1,0 +1,7 @@
+{{> layoutStart}}
+<div class="page-head">
+  <div><h1>In-house guests &amp; billing</h1><p>Checked-in guests, their folios, billing and checkout</p></div>
+  <div class="page-actions" id="page-actions"></div>
+</div>
+<div id="page-root"><div class="loading"><span class="spinner"></span>Loading…</div></div>
+{{> layoutEnd}}

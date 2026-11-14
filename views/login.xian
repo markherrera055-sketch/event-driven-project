@@ -1,0 +1,42 @@
+{{> authStart}}
+      <form class="lobby-form" method="POST" action="/login" novalidate data-login-form>
+        <div class="lobby-heading">
+          <h1>Welcome back</h1>
+          <p class="lead">Sign in to the front desk and administration console.</p>
+        </div>
+
+        {{#if error}}<div class="alert alert-danger" role="alert">{{error}}</div>{{/if}}
+        {{#each error_msg}}<div class="alert alert-warning" role="alert">{{this}}</div>{{/each}}
+        {{#each success_msg}}<div class="alert alert-success" role="status">{{this}}</div>{{/each}}
+
+        <input type="hidden" name="_csrf" value="{{csrfToken}}">
+
+        <div class="field">
+          <label for="username">Username</label>
+          <input id="username" name="username" autocomplete="username" autocapitalize="off" spellcheck="false" maxlength="50"
+            value="{{username}}" placeholder="Your staff username" required {{#unless username}}autofocus{{/unless}}>
+        </div>
+
+        <div class="field">
+          <div class="label-row">
+            <label for="password">Password</label>
+            <a class="label-link" href="/forgot-password">Forgot password?</a>
+          </div>
+          <div class="input-group">
+            <input id="password" type="password" name="password" data-password autocomplete="current-password" maxlength="200"
+              spellcheck="false" autocapitalize="off" placeholder="Your password" required {{#if username}}autofocus{{/if}}>
+            <button type="button" class="input-addon" data-toggle-password aria-controls="password" aria-pressed="false" aria-label="Show password">Show</button>
+          </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary btn-lg btn-block lobby-submit" data-submit>
+          <span>Sign in</span>
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 10h11M11 5.5 15.5 10 11 14.5"/></svg>
+        </button>
+
+        <p class="lobby-note">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4.5" y="9" width="11" height="8" rx="1.8"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg>
+          <span>Authorized hotel staff only. Accounts are issued by your administrator.</span>
+        </p>
+      </form>
+{{> authEnd script="login"}}

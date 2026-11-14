@@ -1,0 +1,145 @@
+{
+  "info": {
+    "name": "Hotel FrontDesk PMS — API v1",
+    "description": "Sample requests for the PMS.\n\n1. Integrations (POS, Hotel Reservation System): set posApiKey / reservationApiKey to the values of POS_API_KEY / RESERVATION_API_KEY in the server's .env. Idempotency-Key uses {{$guid}} so every send is a new operation; to test a retry, replace it with a fixed value.\n2. Staff API: run the 'Staff session' requests in order (they store the CSRF token); Postman keeps the session cookie automatically.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "posApiKey", "value": "change-me" },
+    { "key": "reservationApiKey", "value": "change-me" },
+    { "key": "username", "value": "frontdesk" },
+    { "key": "password", "value": "change-me" },
+    { "key": "csrfToken", "value": "" },
+    { "key": "roomNumber", "value": "204" },
+    { "key": "externalReservationId", "value": "HRS-1001" },
+    { "key": "checkInDate", "value": "2026-11-20" },
+    { "key": "checkOutDate", "value": "2026-11-22" }
+  ],
+  "item": [
+    {
+      "name": "Hotel Reservation System (integration)",
+      "item": [
+        {
+          "name": "List room types",
+          "request": { "method": "GET", "header": [{ "key": "X-Api-Key", "value": "{{reservationApiKey}}" }], "url": "{{baseUrl}}/api/v1/integrations/reservations/room-types" }
+        },
+        {
+          "name": "Check availability",
+          "request": { "method": "GET", "header": [{ "key": "X-Api-Key", "value": "{{reservationApiKey}}" }], "url": "{{baseUrl}}/api/v1/integrations/reservations/availability?checkInDate={{checkInDate}}&checkOutDate={{checkOutDate}}" }
+        },
+        {
+          "name": "Create reservation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Api-Key", "value": "{{reservationApiKey}}" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"externalReservationId\": \"{{externalReservationId}}\",\n  \"bookingReference\": \"BK-7781\",\n  \"guest\": { \"firstName\": \"Maria\", \"lastName\": \"Santos\", \"email\": \"maria@example.com\", \"phone\": \"+63 917 555 0101\" },\n  \"roomType\": \"Deluxe\",\n  \"checkInDate\": \"{{checkInDate}}\",\n  \"checkOutDate\": \"{{checkOutDate}}\",\n  \"numGuests\": 2,\n  \"paymentStatus\": \"PREPAID\",\n  \"notes\": \"Late arrival\"\n}" },
+            "url": "{{baseUrl}}/api/v1/integrations/reservations/"
+          }
+        },
+        {
+          "name": "Get reservation status",
+          "request": { "method": "GET", "header": [{ "key": "X-Api-Key", "value": "{{reservationApiKey}}" }], "url": "{{baseUrl}}/api/v1/integrations/reservations/{{externalReservationId}}" }
+        },
+        {
+          "name": "Modify reservation",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "X-Api-Key", "value": "{{reservationApiKey}}" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"checkOutDate\": \"2026-11-23\",\n  \"paymentStatus\": \"DEPOSIT_PAID\"\n}" },
+            "url": "{{baseUrl}}/api/v1/integrations/reservations/{{externalReservationId}}"
+          }
+        },
+        {
+          "name": "Cancel reservation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Api-Key", "value": "{{reservationApiKey}}" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"reason\": \"Guest cancelled online\" }" },
+            "url": "{{baseUrl}}/api/v1/integrations/reservations/{{externalReservationId}}/cancel"
+          }
+        },
+        {
+          "name": "Negative test — missing API key (expect 401)",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/integrations/reservations/room-types" }
+        }
+      ]
+    },
+    {
+      "name": "POS (integration)",
+      "item": [
+        {
+          "name": "Look up in-house guest by room",
+          "request": { "method": "GET", "header": [{ "key": "X-Api-Key", "value": "{{posApiKey}}" }], "url": "{{baseUrl}}/api/v1/integrations/pos/in-house?roomNumber={{roomNumber}}" }
+        },
+        {
+          "name": "Post charge to room folio",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "X-Api-Key", "value": "{{posApiKey}}" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" },
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": { "mode": "raw", "raw": "{\n  \"externalTransactionId\": \"POS-TXN-{{$timestamp}}\",\n  \"roomNumber\": \"{{roomNumber}}\",\n  \"guestLastName\": \"Santos\",\n  \"outlet\": \"Lobby Restaurant\",\n  \"category\": \"FOOD\",\n  \"description\": \"Dinner for two\",\n  \"amount\": 850.50,\n  \"currency\": \"PHP\",\n  \"transactionAt\": \"{{$isoTimestamp}}\",\n  \"items\": [\n    { \"name\": \"Chicken adobo\", \"quantity\": 2, \"unitPrice\": 320.25 },\n    { \"name\": \"Iced tea\", \"quantity\": 2, \"unitPrice\": 105.00 }\n  ]\n}" },
+            "url": "{{baseUrl}}/api/v1/integrations/pos/charges"
+          }
+        },
+        {
+          "name": "Get charge status",
+          "request": { "method": "GET", "header": [{ "key": "X-Api-Key", "value": "{{posApiKey}}" }], "url": "{{baseUrl}}/api/v1/integrations/pos/charges/POS-TXN-0001" }
+        }
+      ]
+    },
+    {
+      "name": "Staff session (front desk / admin)",
+      "item": [
+        {
+          "name": "1. Open login page (stores CSRF token)",
+          "event": [{ "listen": "test", "script": { "exec": ["const m = pm.response.text().match(/name=\"_csrf\" value=\"([a-f0-9]+)\"/);", "if (m) pm.collectionVariables.set('csrfToken', m[1]);"] } }],
+          "request": { "method": "GET", "url": "{{baseUrl}}/login" }
+        },
+        {
+          "name": "2. Sign in",
+          "request": {
+            "method": "POST",
+            "body": { "mode": "urlencoded", "urlencoded": [{ "key": "_csrf", "value": "{{csrfToken}}" }, { "key": "username", "value": "{{username}}" }, { "key": "password", "value": "{{password}}" }] },
+            "url": "{{baseUrl}}/login"
+          }
+        },
+        {
+          "name": "3. Who am I (refreshes CSRF token)",
+          "event": [{ "listen": "test", "script": { "exec": ["pm.collectionVariables.set('csrfToken', pm.response.json().data.csrfToken);"] } }],
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/me" }
+        },
+        { "name": "Dashboard", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/dashboard" } },
+        { "name": "Today's arrivals", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/reservations?view=arrivals" } },
+        { "name": "Reservation by code", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/reservations/RSV-0001" } },
+        {
+          "name": "Create walk-in reservation",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "X-CSRF-Token", "value": "{{csrfToken}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"guest\": { \"firstName\": \"Juan\", \"lastName\": \"Dela Cruz\", \"phone\": \"0917-000-0000\" },\n  \"roomType\": \"Deluxe\",\n  \"checkInDate\": \"{{checkInDate}}\",\n  \"checkOutDate\": \"{{checkOutDate}}\",\n  \"numGuests\": 2\n}" },
+            "url": "{{baseUrl}}/api/v1/reservations"
+          }
+        },
+        { "name": "In-house stays", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/stays" } },
+        { "name": "Rooms", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/rooms" } },
+        { "name": "Report (last 7 days)", "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/reports/summary" } }
+      ]
+    }
+  ]
+}

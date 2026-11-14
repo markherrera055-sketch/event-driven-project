@@ -1,0 +1,44 @@
+<aside class="sidebar" id="sidebar">
+  <div class="brand">
+    <div class="brand-mark">FD</div>
+    <div>{{hotelName}}<small>{{#if isAdmin}}Admin Console{{else}}Front Desk{{/if}}</small></div>
+  </div>
+  <nav class="nav" aria-label="Main">
+    <a href="/dashboard" class="{{#if (eq nav "dashboard")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+      Dashboard</a>
+    <div class="nav-section">Front desk</div>
+    <a href="/front-desk/reservations" class="{{#if (eq nav "reservations")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+      Reservations</a>
+    <a href="/front-desk/in-house" class="{{#if (eq nav "in-house")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21V8l9-5 9 5v13"/><path d="M9 21v-7h6v7"/></svg>
+      In-house &amp; billing</a>
+    <a href="/guests" class="{{#if (eq nav "guests")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7"/><path d="M17 11a3 3 0 1 0 0-6M22 21c0-3-2-5.5-5-6.5"/></svg>
+      Guests</a>
+    <a href="/rooms" class="{{#if (eq nav "rooms")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20v-8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8M2 16h20M6 10V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v4"/></svg>
+      Rooms &amp; housekeeping</a>
+    <a href="/reports" class="{{#if (eq nav "reports")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg>
+      Reports</a>
+    {{#if isAdmin}}
+    <div class="nav-section">Administration</div>
+    <a href="/admin/rooms" class="{{#if (eq nav "admin-rooms")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+      Manage rooms</a>
+    <a href="/admin/staff" class="{{#if (eq nav "admin-staff")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-7 8-7s8 3 8 7"/></svg>
+      Staff accounts</a>
+    <a href="/admin/integrations" class="{{#if (eq nav "admin-integrations")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/></svg>
+      Integrations</a>
+    {{/if}}
+    <div class="nav-section">Account</div>
+    <a href="/account" class="{{#if (eq nav "account")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+      Account &amp; password</a>
+  </nav>
+  <div class="sidebar-foot">Hotel FrontDesk PMS · API v1</div>
+</aside>

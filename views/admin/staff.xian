@@ -1,0 +1,7 @@
+{{> layoutStart}}
+<div class="page-head">
+  <div><div class="breadcrumb">Admin Console /</div><h1>Staff accounts</h1><p>Receptionist and administrator accounts</p></div>
+  <div class="page-actions" id="page-actions"><button class="btn btn-primary" id="new-staff">+ Add staff</button></div>
+</div>
+<div id="page-root"><div class="loading"><span class="spinner"></span>Loading…</div></div>
+{{> layoutEnd}}

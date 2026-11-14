@@ -1,0 +1,11 @@
+{{> head}}
+<body class="lobby-body">
+<div class="lobby">
+  <img class="lobby-photo" src="/images/lobby.jpg" alt="" width="1024" height="1024" decoding="async" fetchpriority="high">
+  <div class="lobby-shade" aria-hidden="true"></div>
+  <main class="lobby-main">
+    <div class="lobby-card">
+      <header class="lobby-brand">
+        <div class="brand-mark" aria-hidden="true">FD</div>
+        <div class="lobby-brand-name">{{hotelName}}<small>Property Management System</small></div>
+      </header>

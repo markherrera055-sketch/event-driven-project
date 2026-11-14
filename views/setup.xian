@@ -1,0 +1,31 @@
+{{> authStart}}
+      <form class="lobby-form" method="POST" action="/setup" novalidate>
+        <div class="lobby-heading">
+          <h1>First-time setup</h1>
+          <p class="lead">Create the first administrator account. This page is available only once, while no staff accounts exist.</p>
+        </div>
+        <input type="hidden" name="_csrf" value="{{csrfToken}}">
+        <div class="field {{#if errors.fullName}}has-error{{/if}}">
+          <label for="fullName">Full name</label>
+          <input id="fullName" name="fullName" value="{{values.fullName}}" required>
+          {{#if errors.fullName}}<div class="field-error">{{errors.fullName}}</div>{{/if}}
+        </div>
+        <div class="field {{#if errors.username}}has-error{{/if}}">
+          <label for="username">Username</label>
+          <input id="username" name="username" value="{{values.username}}" autocomplete="username" required>
+          {{#if errors.username}}<div class="field-error">{{errors.username}}</div>{{/if}}
+        </div>
+        <div class="field {{#if errors.password}}has-error{{/if}}">
+          <label for="password">Password</label>
+          <input id="password" type="password" name="password" autocomplete="new-password" required>
+          <div class="hint">At least 10 characters with uppercase, lowercase, a number and a symbol.</div>
+          {{#if errors.password}}<div class="field-error">{{errors.password}}</div>{{/if}}
+        </div>
+        <div class="field {{#if errors.confirmPassword}}has-error{{/if}}">
+          <label for="confirmPassword">Confirm password</label>
+          <input id="confirmPassword" type="password" name="confirmPassword" autocomplete="new-password" required>
+          {{#if errors.confirmPassword}}<div class="field-error">{{errors.confirmPassword}}</div>{{/if}}
+        </div>
+        <button type="submit" class="btn btn-primary btn-lg btn-block lobby-submit">Create administrator</button>
+      </form>
+{{> authEnd}}

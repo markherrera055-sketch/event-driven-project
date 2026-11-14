@@ -1,0 +1,7 @@
+{{> layoutStart}}
+<div class="page-head">
+  <div><h1>Reservations</h1><p>Search, create and process arriving guests</p></div>
+  <div class="page-actions" id="page-actions">{{#if isReceptionist}}<button class="btn btn-primary" id="new-reservation" title="New reservation (keyboard shortcut)">+ New reservation <kbd class="kbd" data-shortcut-hint="A">Ctrl + A</kbd></button>{{/if}}</div>
+</div>
+<div id="page-root"><div class="loading"><span class="spinner"></span>Loading…</div></div>
+{{> layoutEnd}}

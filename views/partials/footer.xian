@@ -1,0 +1,4 @@
+<div class="toasts" id="toasts" aria-live="polite"></div>
+{{#if page}}<script type="module" src="/js/pages/{{page}}.js"></script>{{/if}}
+</body>
+</html>
