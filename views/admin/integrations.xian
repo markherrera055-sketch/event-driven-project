@@ -1,6 +1,6 @@
 {{> layoutStart}}
 <div class="page-head">
-  <div><div class="breadcrumb">Admin Console /</div><h1>Integrations</h1><p>POS and Hotel Reservation System connection status, inbound requests and outbound webhooks</p></div>
+  <div><div class="breadcrumb">Admin Console /</div><h1>Integrations</h1><p>Booking, POS, Housekeeping and HR/Payroll connection status, inbound requests and outbound webhooks</p></div>
   <div class="page-actions" id="page-actions"></div>
 </div>
 <div id="page-root"><div class="loading"><span class="spinner"></span>Loading…</div></div>

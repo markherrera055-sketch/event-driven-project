@@ -11,6 +11,7 @@ import * as stays from "../../services/stayService.js";
 import * as billing from "../../services/billingService.js";
 import * as payments from "../../services/paymentService.js";
 import * as checkout from "../../services/checkoutService.js";
+import * as folio from "../../services/folioService.js";
 
 // ── Identity verification ───────────────────────────────────────────────────
 export const verifyIdentity = asyncHandler(async (req, res) => {
@@ -41,6 +42,7 @@ export const listStays = asyncHandler(async (req, res) => {
 });
 
 export const showStay = asyncHandler(async (req, res) => ok(res, await stays.getStay(Number(req.params.id))));
+export const showFolio = asyncHandler(async (req, res) => ok(res, await folio.getFolio(Number(req.params.id))));
 
 // ── Billing ─────────────────────────────────────────────────────────────────
 export const generateBill = asyncHandler(async (req, res) => {

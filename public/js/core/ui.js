@@ -72,12 +72,12 @@ export const initials = (name) =>
 
 const BADGE = {
   CONFIRMED: "blue", CHECKED_IN: "green", CHECKED_OUT: "plain", CANCELLED: "red",
-  VACANT: "green", OCCUPIED: "blue", IN_HOUSE: "green",
+  OCCUPIED: "blue", IN_HOUSE: "green", DIRTY: "amber", CLEANING: "sky",
   DRAFT: "amber", PAID: "green",
   VERIFIED: "green", FAILED: "red", SUCCESSFUL: "green",
   PENDING: "amber", SENT: "green", SKIPPED: "plain",
   RECEPTIONIST: "sky", ADMINISTRATOR: "violet",
-  FRONT_DESK: "plain", RESERVATION_SYSTEM: "violet",
+  FRONT_DESK: "plain", RESERVATION_SYSTEM: "violet", BOOKING: "violet", POS: "sky", HOUSEKEEPING: "amber", HR: "plain",
   AVAILABLE: "green", RESERVED: "blue", MAINTENANCE: "red", INACTIVE: "plain", DELETED: "plain",
 };
 export const badge = (status, text) => {
@@ -85,14 +85,14 @@ export const badge = (status, text) => {
   return html`<span class="badge ${tone === "plain" ? "" : `badge-${tone}`}">${text || label(status)}</span>`;
 };
 
-/** Room status as staff see it: stored status plus the derived Reserved / Inactive states. */
+/** Room status as staff see it: the stored lifecycle status, or Inactive / Deleted for rooms out of inventory. */
 const ROOM_STATUS_TEXT = {
-  AVAILABLE: "Available", RESERVED: "Reserved", OCCUPIED: "Occupied",
+  AVAILABLE: "Available", RESERVED: "Reserved", OCCUPIED: "Occupied", DIRTY: "Dirty", CLEANING: "Cleaning",
   MAINTENANCE: "Under maintenance", INACTIVE: "Inactive", DELETED: "Deleted",
 };
+export const isRoomReady = (room) => room.status === "AVAILABLE" || room.status === "RESERVED";
 export const roomDisplayStatus = (room) =>
-  room.displayStatus ||
-  (room.archivedAt ? "DELETED" : room.isActive === false ? "INACTIVE" : room.status === "VACANT" ? "AVAILABLE" : room.status);
+  room.displayStatus || (room.archivedAt ? "DELETED" : room.isActive === false ? "INACTIVE" : room.status);
 export const roomStatusBadge = (room) => {
   const s = roomDisplayStatus(room);
   return badge(s, ROOM_STATUS_TEXT[s] || label(s));

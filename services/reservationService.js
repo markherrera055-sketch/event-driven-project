@@ -1,8 +1,13 @@
 /**
  * Reservation module — display reservation (1.0 in the DFD), plus the
- * minimum needed to run without the external Hotel Reservation System:
- * create, modify, assign a room, cancel. All writes run in a transaction
- * with the availability lock (see availabilityService).
+ * minimum needed to run without the external Guest Booking System: create,
+ * modify, assign a room, cancel. Reservations received from the Guest Booking
+ * System go through the same functions (integrations/booking).
+ *
+ * All writes run in a transaction with the availability lock (see
+ * availabilityService). Room status is kept in step with assignments through
+ * roomStatusService: assigning a confirmed reservation makes an AVAILABLE room
+ * RESERVED, and releasing the last one makes it AVAILABLE again.
  */
 import crypto from "crypto";
 import { Op } from "sequelize";
@@ -14,15 +19,27 @@ import {
   RESERVATION_STATUS,
   RESERVATION_SOURCE,
   ROOM_STATUS,
+  READY_ROOM_STATUSES,
+  HOUSEKEEPING_ROOM_STATUSES,
   STAY_STATUS,
+  STATUS_CHANGE_SOURCE,
 } from "../models/index.js";
 import { conflict, notFound, validationError } from "../utils/errors.js";
 import { today, addDays } from "../utils/dates.js";
 import { pageMeta } from "../utils/http.js";
-import { assertBookable, assertValidDates, findAvailableRooms, lockRoomTypes, peekRoomType } from "./availabilityService.js";
+import {
+  assertBookable,
+  assertValidDates,
+  findAvailableRooms,
+  lockRoomTypes,
+  peekRoomType,
+  pickRoomForStay,
+  roomStillFits,
+} from "./availabilityService.js";
 import { findOrCreateGuest } from "./guestService.js";
+import { syncReservedStatus, transition, lockRoomRow, STATUS_REASON } from "./roomStatusService.js";
+import { reservationData, roomVacatedData } from "./eventPayloads.js";
 import { reservationJSON, roomJSON } from "./serializers.js";
-import { setVacant } from "./roomService.js";
 import { withTransaction } from "./tx.js";
 import { emit, EVENTS } from "./domainEvents.js";
 import { logger } from "../utils/logger.js";
@@ -34,20 +51,9 @@ const detailInclude = [
   { association: "stay", include: ["bill"] },
 ];
 
-export const eventPayload = (reservation, room, origin = "PMS") => ({
-  origin,
-  reservationCode: reservation.reservationCode,
-  source: reservation.source,
-  externalReservationId: reservation.externalReservationId,
-  bookingReference: reservation.bookingReference,
-  status: reservation.status,
-  roomType: reservation.roomType,
-  roomNumber: room ? room.roomNumber : null,
-  checkInDate: reservation.checkInDate,
-  checkOutDate: reservation.checkOutDate,
-  numGuests: reservation.numGuests,
-  occurredAt: new Date().toISOString(),
-});
+/** Room-status audit source for a change made through this module. */
+const statusSource = (source, syncedFromExternal) =>
+  syncedFromExternal || source === RESERVATION_SOURCE.RESERVATION_SYSTEM ? STATUS_CHANGE_SOURCE.BOOKING : STATUS_CHANGE_SOURCE.FRONT_DESK;
 
 /** List with search + quick views used by the front desk. */
 export async function listReservations({ search, status, view, date, page, limit, offset }) {
@@ -97,15 +103,20 @@ export const getReservationByCode = (code) => findReservation({ reservationCode:
 
 /**
  * Creates a reservation (status CONFIRMED). Used by the front desk and by the
- * Reservation System integration (source + external identifiers).
+ * Guest Booking System integration (source + external identifiers).
+ *  - autoAssignRoom: pick a free room of the type when none is given
+ *    (bookings from the Guest Booking System). If no single room is free for
+ *    every night the booking is still accepted by type (availability was
+ *    checked) and the front desk assigns a room later.
  */
-export async function createReservation(input, { actor, source = RESERVATION_SOURCE.FRONT_DESK, transaction } = {}) {
+export async function createReservation(input, { actor, source = RESERVATION_SOURCE.FRONT_DESK, transaction, autoAssignRoom = false } = {}) {
   assertValidDates(input);
   return withTransaction(transaction, async (t) => {
-    const { roomType, room } = await assertBookable(
-      { roomType: input.roomType, roomId: input.roomId, checkInDate: input.checkInDate, checkOutDate: input.checkOutDate, numGuests: input.numGuests },
-      t
-    );
+    const stay = { checkInDate: input.checkInDate, checkOutDate: input.checkOutDate, numGuests: input.numGuests };
+    const bookable = await assertBookable({ roomType: input.roomType, roomId: input.roomId, ...stay }, t);
+    const { roomType } = bookable;
+    let { room } = bookable;
+    if (!room && autoAssignRoom) room = await pickRoomForStay(bookable.rooms, stay, t);
 
     let guest;
     if (input.guestId) {
@@ -136,8 +147,12 @@ export async function createReservation(input, { actor, source = RESERVATION_SOU
       { transaction: t }
     );
     await reservation.update({ reservationCode: `RSV-${String(reservation.id).padStart(4, "0")}` }, { transaction: t });
-    await emit(EVENTS.RESERVATION_CREATED, eventPayload(reservation, room), { transaction: t });
-    logger.info("reservation_created", { reservationId: reservation.id, code: reservation.reservationCode, source, by: actor?.id });
+    if (room) {
+      room = await syncReservedStatus(room.id, { source: statusSource(source), actor, reference: reservation.reservationCode }, t);
+    }
+    const origin = source === RESERVATION_SOURCE.RESERVATION_SYSTEM ? "BOOKING" : "PMS";
+    await emit(EVENTS.RESERVATION_CREATED, reservationData(reservation, room, { origin }), { transaction: t });
+    logger.info("reservation_created", { reservationId: reservation.id, code: reservation.reservationCode, source, roomId: room?.id, by: actor?.id });
     return reservation;
   }).then((r) => (transaction ? r : getReservation(r.id)));
 }
@@ -161,8 +176,11 @@ const assertModifiable = (reservation) => {
  * Modifies dates / room type / guest count / room of a CONFIRMED reservation.
  * Availability is re-checked against the new values. If the room type changes
  * and the assigned room no longer matches, the room assignment is cleared.
+ *  - autoAssignRoom (Guest Booking System changes): if the assigned room can no
+ *    longer hold the changed stay, or none is assigned, another free room of
+ *    the type is picked instead of refusing the change.
  */
-export async function updateReservation(where, changes, { actor, transaction, syncedFromExternal = false } = {}) {
+export async function updateReservation(where, changes, { actor, transaction, syncedFromExternal = false, autoAssignRoom = false } = {}) {
   return withTransaction(transaction, async (t) => {
     const reservation = await lockReservation(where, t);
     assertModifiable(reservation);
@@ -180,17 +198,35 @@ export async function updateReservation(where, changes, { actor, transaction, sy
     const datesChanged = changes.checkInDate || changes.checkOutDate;
     if (datesChanged) assertValidDates(next, { allowPastCheckIn: next.checkInDate === reservation.checkInDate });
 
-    const newAssignment = !!next.roomId && next.roomId !== reservation.roomId;
-    const { roomType, room } = await assertBookable({ ...next, excludeReservationId: reservation.id, newAssignment }, t);
+    // Lock the old and the new room type up front (global lock order), so the
+    // room-status sync below works on committed, current data.
+    const target = next.roomId && next.roomId !== reservation.roomId ? await peekRoomType(next.roomId) : null;
+    await lockRoomTypes([reservation.roomType, next.roomType, ...(target ? [target.roomType] : [])], t);
 
+    if (autoAssignRoom && next.roomId && !(await roomStillFits(next.roomId, { ...next, excludeReservationId: reservation.id }, t))) {
+      next.roomId = null;
+    }
+
+    const newAssignment = !!next.roomId && next.roomId !== reservation.roomId;
+    const bookable = await assertBookable({ ...next, excludeReservationId: reservation.id, newAssignment }, t);
+    const { roomType } = bookable;
+    let { room } = bookable;
+    if (!room && autoAssignRoom) room = await pickRoomForStay(bookable.rooms, { ...next, excludeReservationId: reservation.id }, t);
+
+    const previousRoomId = reservation.roomId;
     const update = { ...next, roomType, roomId: room ? room.id : null };
     for (const key of ["notes", "externalPaymentStatus", "bookingReference"]) {
       if (changes[key] !== undefined) update[key] = changes[key];
     }
     if (syncedFromExternal) update.lastSyncedAt = new Date();
     await reservation.update(update, { transaction: t });
-    await emit(EVENTS.RESERVATION_UPDATED, eventPayload(reservation, room, syncedFromExternal ? "RESERVATION_SYSTEM" : "PMS"), { transaction: t });
-    logger.info("reservation_updated", { reservationId: reservation.id, fields: Object.keys(changes), by: actor?.id });
+
+    const ctx = { source: statusSource(reservation.source, syncedFromExternal), actor, reference: reservation.reservationCode };
+    if (previousRoomId && previousRoomId !== update.roomId) await syncReservedStatus(previousRoomId, ctx, t);
+    if (room) room = await syncReservedStatus(room.id, ctx, t);
+
+    await emit(EVENTS.RESERVATION_UPDATED, reservationData(reservation, room, { origin: syncedFromExternal ? "BOOKING" : "PMS" }), { transaction: t });
+    logger.info("reservation_updated", { reservationId: reservation.id, fields: Object.keys(changes), roomId: update.roomId, by: actor?.id });
     return reservation;
   }).then((r) => (transaction ? r : getReservation(r.id)));
 }
@@ -198,9 +234,9 @@ export async function updateReservation(where, changes, { actor, transaction, sy
 /**
  * Assigns or changes the room of a reservation (the editable "Assigned room").
  *  - CONFIRMED: the reservation simply points at the new room. The previous
- *    room is released automatically, because a room's availability is derived
- *    from the reservations that hold it. Guest, dates and booking details are
- *    untouched; the room type follows the new room.
+ *    room is released (RESERVED → AVAILABLE when nothing else is assigned to
+ *    it). Guest, dates and booking details are untouched; the room type
+ *    follows the new room.
  *  - CHECKED_IN: an in-house room move (see moveInHouseGuest).
  * Every check is repeated inside the transaction under row locks, so two
  * clerks cannot give the same room away twice.
@@ -216,11 +252,12 @@ export async function assignRoom(id, roomId, { actor } = {}) {
 
 /**
  * Room move for a checked-in guest, in one transaction:
- *   new room VACANT → OCCUPIED, previous room OCCUPIED → VACANT (needs
- *   cleaning, since the guest used it), reservation → new room.
- * The new room must be in service, not under maintenance, vacant, clean, big
- * enough and free for the rest of the stay. Moves are refused once a final
- * bill exists, because the bill is priced from the room at generation time.
+ *   new room AVAILABLE / RESERVED → OCCUPIED, previous room OCCUPIED → DIRTY
+ *   (RoomVacated is published so Housekeeping cleans it), reservation → new room.
+ * The new room must be in service, ready (clean, not occupied, not under
+ * maintenance), big enough and free for the rest of the stay. Moves are
+ * refused once a final bill exists, because the bill is priced from the room
+ * at generation time.
  */
 export async function moveInHouseGuest(id, roomId, { actor } = {}) {
   const target = await peekRoomType(roomId);
@@ -258,22 +295,22 @@ export async function moveInHouseGuest(id, roomId, { actor } = {}) {
       },
       t
     );
-    if (room.status !== ROOM_STATUS.VACANT) throw conflict("ROOM_OCCUPIED", `Room ${room.roomNumber} is not vacant.`);
-    if (room.needsCleaning) {
-      throw conflict("ROOM_NOT_READY", `Room ${room.roomNumber} has not been cleaned since the last guest. Mark it clean first.`);
+    if (HOUSEKEEPING_ROOM_STATUSES.includes(room.status)) {
+      throw conflict("ROOM_NOT_READY", `Room ${room.roomNumber} is ${room.status} and has not been cleaned since the last guest.`);
+    }
+    if (!READY_ROOM_STATUSES.includes(room.status)) throw conflict("ROOM_OCCUPIED", `Room ${room.roomNumber} is not vacant.`);
+
+    const ctx = { source: STATUS_CHANGE_SOURCE.FRONT_DESK, actor, reference: reservation.reservationCode };
+    const previousRoom = reservation.roomId ? await lockRoomRow(reservation.roomId, t) : null;
+    await transition(room, ROOM_STATUS.OCCUPIED, { ...ctx, reason: STATUS_REASON.ROOM_MOVE_IN }, t);
+    await reservation.update({ roomId: room.id, roomType: room.roomType }, { transaction: t });
+    if (previousRoom) {
+      await transition(previousRoom, ROOM_STATUS.DIRTY, { ...ctx, reason: STATUS_REASON.ROOM_MOVE_OUT }, t);
+      await emit(EVENTS.ROOM_VACATED, roomVacatedData({ reservation, stay, room: previousRoom, at: new Date(), reason: "ROOM_MOVE" }), { transaction: t });
     }
 
-    const previousRoomId = reservation.roomId;
-    const [moved] = await Room.update(
-      { status: ROOM_STATUS.OCCUPIED },
-      { where: { id: room.id, status: ROOM_STATUS.VACANT, needsCleaning: false }, transaction: t }
-    );
-    if (moved !== 1) throw conflict("ROOM_OCCUPIED", `Room ${room.roomNumber} was just taken. Choose another room.`);
-    if (previousRoomId) await setVacant(previousRoomId, t);
-    await reservation.update({ roomId: room.id, roomType: room.roomType }, { transaction: t });
-
-    await emit(EVENTS.RESERVATION_UPDATED, eventPayload(reservation, room), { transaction: t });
-    logger.info("room_moved", { reservationId: reservation.id, stayId: stay.id, fromRoomId: previousRoomId, toRoomId: room.id, by: actor?.id });
+    await emit(EVENTS.RESERVATION_UPDATED, reservationData(reservation, room), { transaction: t });
+    logger.info("room_moved", { reservationId: reservation.id, stayId: stay.id, fromRoomId: previousRoom?.id, toRoomId: room.id, by: actor?.id });
   });
   return getReservation(id);
 }
@@ -282,6 +319,7 @@ export async function cancelReservation(where, reason, { actor, transaction, syn
   return withTransaction(transaction, async (t) => {
     const reservation = await lockReservation(where, t);
     assertModifiable(reservation);
+    if (reservation.roomId) await lockRoomTypes([reservation.roomType], t);
     await reservation.update(
       {
         status: RESERVATION_STATUS.CANCELLED,
@@ -291,7 +329,11 @@ export async function cancelReservation(where, reason, { actor, transaction, syn
       },
       { transaction: t }
     );
-    await emit(EVENTS.RESERVATION_CANCELLED, eventPayload(reservation, null, syncedFromExternal ? "RESERVATION_SYSTEM" : "PMS"), { transaction: t });
+    // The room stays recorded on the cancelled reservation (history) but no longer holds it.
+    const room = reservation.roomId
+      ? await syncReservedStatus(reservation.roomId, { source: statusSource(reservation.source, syncedFromExternal), actor, reference: reservation.reservationCode }, t)
+      : null;
+    await emit(EVENTS.RESERVATION_CANCELLED, reservationData(reservation, room, { origin: syncedFromExternal ? "BOOKING" : "PMS" }), { transaction: t });
     logger.info("reservation_cancelled", { reservationId: reservation.id, by: actor?.id });
     return reservation;
   }).then((r) => (transaction ? r : getReservation(r.id)));
@@ -299,7 +341,7 @@ export async function cancelReservation(where, reason, { actor, transaction, syn
 
 /**
  * Rooms eligible for this reservation's dates (same type by default). For an
- * in-house guest only rooms that are vacant and clean right now are offered.
+ * in-house guest only rooms that are ready right now are offered.
  */
 export async function assignableRooms(id, { allTypes = false } = {}) {
   const reservation = await Reservation.findByPk(id);

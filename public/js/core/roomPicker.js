@@ -23,7 +23,7 @@ function optionRow(room, current, reservation, inHouse) {
     <span class="ro-main"><strong>Room ${room.roomNumber}</strong>
       <span class="sub">${room.roomType}${room.floor ? ` · Floor ${room.floor}` : ""} · up to ${room.capacity}${typeChange ? " · different type" : ""}</span>
       ${amenities ? html`<span class="sub">${amenities}</span>` : ""}</span>
-    <span class="ro-status">${roomStatusBadge(room)}${room.needsCleaning ? html`<span class="badge badge-amber plain">Needs cleaning</span>` : ""}</span>
+    <span class="ro-status">${roomStatusBadge(room)}</span>
     <span class="ro-rate num">${money(room.nightlyRate)}<span class="sub">per night</span></span>
     <span class="ro-avail"><span class="badge badge-green plain">${inHouse ? "Vacant & clean now" : `Free · ${nightsText(reservation.nights)}`}</span></span>
   </label>`;

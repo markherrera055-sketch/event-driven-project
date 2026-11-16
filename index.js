@@ -61,11 +61,19 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: "100kb" }));
+app.use(
+  express.json({
+    limit: "100kb",
+    // Integration requests keep their exact bytes so HMAC signatures can be verified.
+    verify: (req, res, buf) => {
+      if (req.originalUrl.startsWith("/api/v1/integrations")) req.rawBody = buf.toString("utf8");
+    },
+  })
+);
 app.use(express.urlencoded({ extended: false, limit: "100kb" }));
 app.use(express.static(path.join(__dirname, "public"), { maxAge: config.isProduction ? "1h" : 0 }));
 
-// External systems (POS, Hotel Reservation System): API-key auth, no cookies,
+// External systems (Booking, POS, Housekeeping, HR): API-key auth, no cookies,
 // so they are mounted before the session / CSRF middleware.
 app.use("/api/v1/integrations", integrationRouter());
 

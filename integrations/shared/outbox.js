@@ -1,51 +1,56 @@
 /**
- * Outbound webhooks via a transactional outbox.
+ * Webhook delivery from the transactional outbox (rows are written by
+ * subscriptions.js inside the business transaction).
  *
- *  enqueue()  — called inside the business transaction; writes a PENDING row.
- *  worker     — periodically delivers due rows with an HMAC-SHA256 signature,
- *               retrying with exponential backoff (30s, 1m, 2m … max 1h)
- *               until INTEGRATION_OUTBOX_MAX_ATTEMPTS, then FAILED.
- *               If the target has no webhook URL configured the row is SKIPPED.
+ * Worker: claims due PENDING rows with SELECT … FOR UPDATE SKIP LOCKED (safe
+ * with several app instances), POSTs each one signed with HMAC-SHA256, and
+ * retries failures with exponential backoff (30 s, 1 min, 2 min … max 1 h)
+ * until INTEGRATION_OUTBOX_MAX_ATTEMPTS, then marks the row FAILED. An
+ * administrator can re-queue FAILED rows from the Admin Console.
+ * Delivery is at-least-once: receivers de-duplicate on event_id.
  *
- * Signature (receivers should verify it):
+ * Headers:
+ *   X-PMS-Event: <event name>        X-PMS-Event-Id: EVT-000042
+ *   X-PMS-Delivery: <outbox id>      X-PMS-Timestamp: <unix seconds>
  *   X-PMS-Signature: sha256=<hex HMAC-SHA256(secret, `${timestamp}.${rawBody}`)>
- *   X-PMS-Timestamp: <unix seconds>   X-PMS-Event: <eventType>   X-PMS-Delivery: <outbox id>
  */
-import crypto from "crypto";
-import { Op } from "sequelize";
-import { IntegrationOutbox, OUTBOX_STATUS, OUTBOX_TARGETS } from "../../models/index.js";
+import { QueryTypes } from "sequelize";
+import { sequelize, IntegrationOutbox, OUTBOX_STATUS } from "../../models/index.js";
 import { config } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
+import { clientSettings } from "./clients.js";
+import { signPayload } from "./signature.js";
 
-const targetConfig = (target) =>
-  target === OUTBOX_TARGETS.POS ? config.integrations.pos : config.integrations.reservations;
+export { signPayload };
 
-export const enqueue = (target, eventType, payload, transaction) =>
-  IntegrationOutbox.create({ target, eventType, payload, status: OUTBOX_STATUS.PENDING, nextAttemptAt: new Date() }, { transaction });
-
-export const signPayload = (secret, timestamp, rawBody) =>
-  `sha256=${crypto.createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")}`;
-
-const backoffMs = (attempts) => Math.min(60 * 60 * 1000, 30_000 * 2 ** Math.max(0, attempts - 1));
+const LEASE_MS = 2 * 60 * 1000;
+export const backoffMs = (attempts) => Math.min(60 * 60 * 1000, 30_000 * 2 ** Math.max(0, attempts - 1));
 
 async function deliver(row) {
-  const { webhookUrl, webhookSecret } = targetConfig(row.target);
+  const { webhookUrl, webhookSecret } = clientSettings(row.target);
   if (!webhookUrl) {
     await row.update({ status: OUTBOX_STATUS.SKIPPED, lastError: "No webhook URL configured" });
     return;
   }
-  const rawBody = JSON.stringify({ id: row.id, event: row.eventType, createdAt: row.createdAt, data: row.payload });
+  const attempts = row.attempts + 1;
+  if (config.isProduction && !webhookUrl.startsWith("https://")) {
+    await row.update({ status: OUTBOX_STATUS.FAILED, attempts, lastError: "Webhook URL must use HTTPS in production" });
+    return;
+  }
+
+  const rawBody = JSON.stringify(row.payload);
   const timestamp = Math.floor(Date.now() / 1000).toString();
   const headers = {
     "Content-Type": "application/json",
-    "User-Agent": "HotelFrontDeskPMS-Webhooks/1.0",
+    "User-Agent": "HotelFrontDeskPMS-Webhooks/2.0",
     "X-PMS-Event": row.eventType,
+    "X-PMS-Event-Id": String(row.payload?.event_id ?? ""),
     "X-PMS-Delivery": String(row.id),
     "X-PMS-Timestamp": timestamp,
   };
   if (webhookSecret) headers["X-PMS-Signature"] = signPayload(webhookSecret, timestamp, rawBody);
 
-  const attempts = row.attempts + 1;
+  let status = null;
   try {
     const response = await fetch(webhookUrl, {
       method: "POST",
@@ -53,9 +58,10 @@ async function deliver(row) {
       body: rawBody,
       signal: AbortSignal.timeout(config.integrations.webhookTimeoutMs),
     });
+    status = response.status;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    await row.update({ status: OUTBOX_STATUS.SENT, attempts, sentAt: new Date(), lastError: null });
-    logger.info("webhook_sent", { id: row.id, target: row.target, event: row.eventType });
+    await row.update({ status: OUTBOX_STATUS.SENT, attempts, sentAt: new Date(), lastError: null, lastResponseStatus: status });
+    logger.info("webhook_sent", { id: row.id, target: row.target, event: row.eventType, eventId: row.payload?.event_id });
   } catch (err) {
     const exhausted = attempts >= config.integrations.outboxMaxAttempts;
     await row.update({
@@ -63,22 +69,35 @@ async function deliver(row) {
       status: exhausted ? OUTBOX_STATUS.FAILED : OUTBOX_STATUS.PENDING,
       nextAttemptAt: new Date(Date.now() + backoffMs(attempts)),
       lastError: String(err.message).slice(0, 500),
+      lastResponseStatus: status,
     });
     logger.warn("webhook_failed", { id: row.id, target: row.target, attempts, exhausted, error: err.message });
   }
 }
 
+/** Claims up to `limit` due rows; the lease keeps other workers away while this one delivers them. */
+async function claimDue(limit) {
+  return sequelize.transaction(async (t) => {
+    const ids = (
+      await sequelize.query(
+        `SELECT id FROM integration_outbox WHERE status = :pending AND next_attempt_at <= :now
+          ORDER BY id LIMIT :limit FOR UPDATE SKIP LOCKED`,
+        { replacements: { pending: OUTBOX_STATUS.PENDING, now: new Date(), limit }, type: QueryTypes.SELECT, transaction: t }
+      )
+    ).map((r) => r.id);
+    if (!ids.length) return [];
+    await IntegrationOutbox.update({ nextAttemptAt: new Date(Date.now() + LEASE_MS) }, { where: { id: ids }, transaction: t });
+    return IntegrationOutbox.findAll({ where: { id: ids }, order: [["id", "ASC"]], transaction: t });
+  });
+}
+
 let running = false;
-/** Delivers all due events once (also used by tests and the admin "retry now" action). */
+/** Delivers all due events once (also used by tests and the admin "retry" action). */
 export async function processOutbox({ limit = 25 } = {}) {
   if (running) return 0;
   running = true;
   try {
-    const due = await IntegrationOutbox.findAll({
-      where: { status: OUTBOX_STATUS.PENDING, nextAttemptAt: { [Op.lte]: new Date() } },
-      order: [["id", "ASC"]],
-      limit,
-    });
+    const due = await claimDue(limit);
     for (const row of due) await deliver(row);
     return due.length;
   } finally {
@@ -99,10 +118,23 @@ export function stopOutboxWorker() {
 
 export async function listOutbox({ status, limit = 50 } = {}) {
   const where = status ? { status } : {};
-  return IntegrationOutbox.findAll({ where, order: [["id", "DESC"]], limit });
+  const rows = await IntegrationOutbox.findAll({ where, order: [["id", "DESC"]], limit });
+  return rows.map((r) => ({
+    id: r.id,
+    target: r.target,
+    eventType: r.eventType,
+    eventId: r.payload?.event_id ?? null,
+    status: r.status,
+    attempts: r.attempts,
+    lastError: r.lastError,
+    lastResponseStatus: r.lastResponseStatus,
+    nextAttemptAt: r.nextAttemptAt,
+    sentAt: r.sentAt,
+    createdAt: r.createdAt,
+  }));
 }
 
-/** Re-queue a FAILED or SKIPPED event (admin action). */
+/** Re-queue an event (admin action). A delivered event can be re-sent: receivers de-duplicate on event_id. */
 export async function retryOutboxEvent(id) {
   const row = await IntegrationOutbox.findByPk(id);
   if (!row) return null;

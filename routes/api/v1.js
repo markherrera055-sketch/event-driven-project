@@ -64,6 +64,7 @@ router.post("/verifications", receptionistOnly, desk.verifyIdentity);
 router.post("/check-ins", receptionistOnly, desk.checkIn);
 router.get("/stays", anyStaff, desk.listStays);
 router.get("/stays/:id", anyStaff, desk.showStay);
+router.get("/stays/:id/folio", anyStaff, desk.showFolio);
 
 // Billing module (6.0, 7.0)
 router.post("/bills", receptionistOnly, desk.generateBill);
@@ -86,6 +87,7 @@ router.patch("/guests/:id", receptionistOnly, property.updateGuest);
 router.get("/rooms", anyStaff, property.listRooms);
 router.get("/room-types", anyStaff, property.listRoomTypes);
 router.get("/rooms/:id", anyStaff, property.showRoom);
+router.get("/rooms/:id/status-history", anyStaff, property.roomStatusHistory);
 router.post("/rooms/:id/clean", anyStaff, property.markRoomClean);
 
 // Admin Console (Room and Staff Admin module)

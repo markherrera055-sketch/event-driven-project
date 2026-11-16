@@ -1,15 +1,20 @@
 /**
  * Receipt and Checkout module (REQ-7: "issue a receipt after payment, then save
- * the checkout") and Room Status (REQ-4: room Vacant at checkout).
- * Checkout = save checkout on the stay + reservation CHECKED_OUT + room VACANT,
- * all in one transaction, and only once the bill is PAID.
+ * the checkout") and Room Status (room OCCUPIED → DIRTY at checkout).
+ * Checkout = save checkout on the stay + reservation CHECKED_OUT + room DIRTY,
+ * all in one transaction, and only once the bill is PAID. The room does NOT
+ * become AVAILABLE here: RoomVacated is published so the Housekeeping System
+ * creates a cleaning task, and the room becomes ready only when housekeeping
+ * reports the cleaning completed (or the front desk marks it clean).
+ * Publishes GuestCheckedOut (with the final folio summary) and RoomVacated.
  */
-import { Stay, Bill, Receipt, BILL_STATUS, STAY_STATUS, RESERVATION_STATUS } from "../models/index.js";
+import { Stay, Bill, Receipt, BILL_STATUS, STAY_STATUS, RESERVATION_STATUS, ROOM_STATUS, STATUS_CHANGE_SOURCE } from "../models/index.js";
 import { conflict, notFound } from "../utils/errors.js";
-import { setVacant } from "./roomService.js";
-import { getStay, stayEventPayload } from "./stayService.js";
+import { transition, lockRoomRow, STATUS_REASON } from "./roomStatusService.js";
+import { getStay } from "./stayService.js";
 import { getBillTotals } from "./billingService.js";
-import { eventPayload } from "./reservationService.js";
+import { getFolio } from "./folioService.js";
+import { guestCheckedOutData, roomVacatedData } from "./eventPayloads.js";
 import { withTransaction } from "./tx.js";
 import { emit, EVENTS } from "./domainEvents.js";
 import { guestJSON, roomJSON, paymentJSON, adjustmentJSON, chargeJSON, receiptJSON, userRef } from "./serializers.js";
@@ -30,17 +35,22 @@ export async function processCheckout(stayId, actor) {
       throw conflict("BILL_NOT_PAID", "The final bill must be generated and paid before checkout.");
     }
 
-    await stay.update(
-      { status: STAY_STATUS.CHECKED_OUT, checkOutAt: new Date(), checkedOutBy: actor.id },
-      { transaction: t }
-    );
-    await stay.reservation.update({ status: RESERVATION_STATUS.CHECKED_OUT }, { transaction: t });
-    await setVacant(stay.reservation.roomId, t);
-
     const { reservation } = stay;
-    await emit(EVENTS.RESERVATION_CHECKED_OUT, eventPayload(reservation, reservation.room), { transaction: t });
-    await emit(EVENTS.STAY_CHECKED_OUT, stayEventPayload(stay, reservation, reservation.room, reservation.guest), { transaction: t });
-    logger.info("checkout", { stayId, reservationId: reservation.id, roomId: reservation.roomId, by: actor.id });
+    const checkOutAt = new Date();
+    await stay.update({ status: STAY_STATUS.CHECKED_OUT, checkOutAt, checkedOutBy: actor.id }, { transaction: t });
+    await reservation.update({ status: RESERVATION_STATUS.CHECKED_OUT }, { transaction: t });
+    const room = await lockRoomRow(reservation.roomId, t);
+    await transition(
+      room,
+      ROOM_STATUS.DIRTY,
+      { reason: STATUS_REASON.CHECKOUT, source: STATUS_CHANGE_SOURCE.FRONT_DESK, actor, reference: reservation.reservationCode },
+      t
+    );
+
+    const folio = await getFolio(stay.id, { transaction: t });
+    await emit(EVENTS.GUEST_CHECKED_OUT, guestCheckedOutData(stay, reservation, room, reservation.guest, folio), { transaction: t });
+    await emit(EVENTS.ROOM_VACATED, roomVacatedData({ reservation, stay, room, at: checkOutAt, reason: "CHECKOUT" }), { transaction: t });
+    logger.info("checkout", { stayId, reservationId: reservation.id, roomId: room.id, balance: folio.totals.balance, by: actor.id });
   });
   return getStay(stayId);
 }

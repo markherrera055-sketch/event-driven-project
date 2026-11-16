@@ -1,33 +1,36 @@
 /**
  * Check-in and Stay module (Figure 7 composite structure):
  *   StayController.checkIn  → VerificationGuard.isVerified → StayRepository.save
- *                           → RoomStatusUpdater.setOccupied
+ *                           → Room Status: RESERVED / AVAILABLE → OCCUPIED
  * REQ-3: "The system shall check in only verified guests and save a stay record."
  * All steps run in one transaction; any failure rolls everything back.
+ * Publishes GuestCheckedIn.
  */
 import { Op } from "sequelize";
-import { Reservation, Stay, RESERVATION_STATUS, STAY_STATUS, ROOM_STATUS } from "../models/index.js";
+import { Reservation, Stay, RESERVATION_STATUS, STAY_STATUS, ROOM_STATUS, HOUSEKEEPING_ROOM_STATUSES, STATUS_CHANGE_SOURCE } from "../models/index.js";
 import { conflict, notFound } from "../utils/errors.js";
 import { today } from "../utils/dates.js";
 import { isVerified } from "./verificationService.js";
-import { setOccupied } from "./roomService.js";
+import { transition, lockRoomRow, STATUS_REASON } from "./roomStatusService.js";
 import { stayJSON } from "./serializers.js";
 import { withTransaction } from "./tx.js";
 import { emit, EVENTS } from "./domainEvents.js";
-import { eventPayload } from "./reservationService.js";
+import { guestCheckedInData } from "./eventPayloads.js";
 import { getBillTotals } from "./billingService.js";
 import { logger } from "../utils/logger.js";
 
-export const stayEventPayload = (stay, reservation, room, guest) => ({
-  folioId: stay.id,
-  reservationCode: reservation.reservationCode,
-  roomNumber: room.roomNumber,
-  guestDisplayName: `${guest.firstName.charAt(0)}. ${guest.lastName}`,
-  checkInAt: stay.checkInAt,
-  checkOutAt: stay.checkOutAt,
-  status: stay.status,
-  occurredAt: new Date().toISOString(),
-});
+/** Refuses check-in into a room that is not ready, with a message the receptionist can act on. */
+const assertRoomReadyForCheckIn = (room) => {
+  if (room.status === ROOM_STATUS.MAINTENANCE) {
+    throw conflict("ROOM_UNDER_MAINTENANCE", `Room ${room.roomNumber} is under maintenance. Assign another room first.`);
+  }
+  if (HOUSEKEEPING_ROOM_STATUSES.includes(room.status)) {
+    throw conflict("ROOM_NOT_READY", `Room ${room.roomNumber} is ${room.status} — it has not been cleaned since the last guest. Wait for housekeeping or mark it clean.`);
+  }
+  if (room.status === ROOM_STATUS.OCCUPIED) {
+    throw conflict("ROOM_OCCUPIED", `Room ${room.roomNumber} is still occupied.`);
+  }
+};
 
 export async function checkIn(reservationId, actor) {
   const stayId = await withTransaction(null, async (t) => {
@@ -50,25 +53,25 @@ export async function checkIn(reservationId, actor) {
     if (!reservation.roomId) {
       throw conflict("ROOM_NOT_ASSIGNED", "Assign a room to this reservation before checking in.");
     }
-    if (reservation.room.status === ROOM_STATUS.MAINTENANCE) {
-      throw conflict("ROOM_UNDER_MAINTENANCE", `Room ${reservation.room.roomNumber} is under maintenance. Assign another room first.`);
-    }
-    if (reservation.room.needsCleaning) {
-      throw conflict("ROOM_NOT_READY", `Room ${reservation.room.roomNumber} has not been cleaned since the last guest. Mark it clean first.`);
-    }
+    const room = await lockRoomRow(reservation.roomId, t);
+    assertRoomReadyForCheckIn(room);
     if (!(await isVerified(reservation.id, t))) {
       throw conflict("IDENTITY_NOT_VERIFIED", "The guest's identity must be verified before check-in.");
     }
 
-    await setOccupied(reservation.roomId, t);
+    await transition(
+      room,
+      ROOM_STATUS.OCCUPIED,
+      { reason: STATUS_REASON.CHECK_IN, source: STATUS_CHANGE_SOURCE.FRONT_DESK, actor, reference: reservation.reservationCode },
+      t
+    );
     const stay = await Stay.create(
       { reservationId: reservation.id, checkInAt: new Date(), checkedInBy: actor.id, status: STAY_STATUS.IN_HOUSE },
       { transaction: t }
     );
     await reservation.update({ status: RESERVATION_STATUS.CHECKED_IN }, { transaction: t });
 
-    await emit(EVENTS.RESERVATION_CHECKED_IN, eventPayload(reservation, reservation.room), { transaction: t });
-    await emit(EVENTS.STAY_CHECKED_IN, stayEventPayload(stay, reservation, reservation.room, reservation.guest), { transaction: t });
+    await emit(EVENTS.GUEST_CHECKED_IN, guestCheckedInData(stay, reservation, room, reservation.guest), { transaction: t });
     logger.info("check_in", { reservationId: reservation.id, stayId: stay.id, roomId: reservation.roomId, by: actor.id });
     return stay.id;
   });

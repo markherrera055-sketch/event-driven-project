@@ -1,142 +1,160 @@
 /**
- * POS integration — posting restaurant / bar / service charges to a guest's
- * room folio. The POS is a separate application; it only talks to the PMS
- * through the authenticated endpoints in ./routes.js.
+ * Restaurant POS (Member 4) → PMS: "Charge to room".
  *
- * Rules:
- *  - The room must have an in-house stay (reservation CHECKED_IN).
- *  - Optional cross-checks: folioId and/or guestLastName must match.
- *  - The folio is open while the stay has no bill or a DRAFT bill. Once the
- *    bill is CONFIRMED / PAID, new charges are refused (FOLIO_CLOSED) so the
- *    amount the guest pays cannot change underneath the cashier.
- *  - (sourceSystem, externalTransactionId) is unique: a POS transaction can
- *    never be charged twice, even with a different Idempotency-Key.
+ * The POS identifies the stay by the PMS reservation_id (from the in-house
+ * lookup or the GuestCheckedIn webhook) plus the room number, and optionally
+ * the guest name as the cashier typed it. The PMS checks, under row locks:
+ *   - the reservation exists and is CHECKED_IN (in-house) — checked-out,
+ *     cancelled or future reservations cannot be charged;
+ *   - the room number is the reservation's current room;
+ *   - the guest name (if sent) matches the registered guest;
+ *   - the currency is the hotel currency and the items add up to the amount;
+ *   - the folio is still open (bill not yet confirmed for checkout);
+ *   - (POS, external_transaction_id) has never been posted — a POS
+ *     transaction can never be charged twice, even with a new Idempotency-Key.
+ * The charge is written to the Guest Folio and is billed at checkout.
  */
 import { UniqueConstraintError } from "sequelize";
-import { Stay, StayCharge, Bill, Room, Reservation, Guest, STAY_STATUS, BILL_STATUS, RESERVATION_STATUS } from "../../models/index.js";
-import { AppError, conflict, notFound, validationError } from "../../utils/errors.js";
+import { Stay, StayCharge, Reservation, Room, RESERVATION_STATUS, STAY_STATUS } from "../../models/index.js";
+import { AppError, conflict, validationError } from "../../utils/errors.js";
 import { sumMoney, toCents } from "../../utils/money.js";
+import { config } from "../../config/index.js";
 import { withTransaction } from "../../services/tx.js";
+import { postFolioCharge, isFolioOpen } from "../../services/folioService.js";
 import { logger } from "../../utils/logger.js";
 
 export const POS_SOURCE = "POS";
 
 const displayName = (guest) => `${guest.firstName.charAt(0)}. ${guest.lastName}`;
+const normalise = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter(Boolean);
 
-async function findInHouseStayByRoom(roomNumber, transaction, lock = false) {
-  const stay = await Stay.findOne({
-    where: { status: STAY_STATUS.IN_HOUSE },
-    include: [
-      {
-        model: Reservation,
-        as: "reservation",
-        required: true,
-        where: { status: RESERVATION_STATUS.CHECKED_IN },
-        include: [
-          { model: Room, as: "room", required: true, where: { roomNumber } },
-          { model: Guest, as: "guest" },
-        ],
-      },
-    ],
-    transaction,
-    ...(lock ? { lock: { level: transaction.LOCK.UPDATE, of: Stay } } : {}),
-  });
-  if (!stay) throw new AppError(404, "NO_IN_HOUSE_GUEST", `Room ${roomNumber} has no checked-in guest.`);
-  return stay;
+/** "John Doe", "Doe John", "Doe, John" and "J. Doe" all match John Doe; the last name is always required. */
+export function guestNameMatches(given, guest) {
+  const words = normalise(given);
+  const last = normalise(guest.lastName);
+  const first = normalise(guest.firstName);
+  if (!last.every((w) => words.includes(w))) return false;
+  const rest = words.filter((w) => !last.includes(w));
+  return rest.length === 0 || rest.every((w) => first.includes(w) || (w.length === 1 && first.some((f) => f.startsWith(w))));
 }
 
-const folioOpen = (bill) => !bill || bill.status === BILL_STATUS.DRAFT;
-
-const chargeView = (charge, stay) => ({
-  pmsChargeId: charge.id,
-  externalTransactionId: charge.externalTransactionId,
-  folioId: charge.stayId,
-  roomNumber: stay?.reservation?.room?.roomNumber,
+const chargeView = (charge, reservation, room) => ({
+  charge_id: charge.id,
+  external_transaction_id: charge.externalTransactionId,
+  status: "POSTED",
+  reservation_id: reservation?.id ?? null,
+  stay_id: charge.stayId,
+  room_number: room?.roomNumber ?? null,
   category: charge.category,
   description: charge.description,
   amount: Number(charge.amount),
-  transactionAt: charge.transactionAt,
-  postedAt: charge.createdAt,
+  currency: config.hotel.currency,
+  items: (charge.items || []).map((i) => ({ name: i.name, quantity: i.quantity, unit_price: Number(i.unitPrice ?? i.unit_price) })),
+  transaction_date: charge.transactionAt,
+  posted_at: charge.createdAt,
 });
 
-/** GET in-house lookup so the cashier can confirm room + guest before charging. */
+const noInHouse = (message) => new AppError(404, "NO_IN_HOUSE_GUEST", message);
+
+/** GET lookup so the cashier can confirm room + guest before charging. Masked name only. */
 export async function lookupInHouse(roomNumber) {
-  const stay = await findInHouseStayByRoom(roomNumber);
-  const bill = await Bill.findOne({ where: { stayId: stay.id } });
+  const reservation = await Reservation.findOne({
+    where: { status: RESERVATION_STATUS.CHECKED_IN },
+    include: [{ model: Room, as: "room", required: true, where: { roomNumber } }, "guest", { association: "stay", include: ["bill"] }],
+  });
+  if (!reservation?.stay) throw noInHouse(`Room ${roomNumber} has no checked-in guest.`);
   return {
-    folioId: stay.id,
-    roomNumber: stay.reservation.room.roomNumber,
-    guestDisplayName: displayName(stay.reservation.guest),
-    checkInAt: stay.checkInAt,
-    expectedCheckOutDate: stay.reservation.checkOutDate,
-    folioOpen: folioOpen(bill),
+    reservation_id: reservation.id,
+    reservation_code: reservation.reservationCode,
+    stay_id: reservation.stay.id,
+    room_number: reservation.room.roomNumber,
+    guest_display_name: displayName(reservation.guest),
+    checked_in_at: reservation.stay.checkInAt,
+    expected_check_out_date: reservation.checkOutDate,
+    folio_open: isFolioOpen(reservation.stay.bill),
   };
 }
 
-export async function postCharge(input) {
+export async function postRoomCharge(input) {
+  if (input.currency !== config.hotel.currency) {
+    throw validationError({ currency: `Only ${config.hotel.currency} is accepted.` });
+  }
   if (input.items?.length) {
-    const itemsTotal = sumMoney(...input.items.map((i) => toCents(i.unitPrice) * i.quantity / 100));
+    const itemsTotal = sumMoney(...input.items.map((i) => (toCents(i.unit_price) * i.quantity) / 100));
     if (toCents(itemsTotal) !== toCents(input.amount)) {
       throw validationError({ amount: `Amount (${input.amount}) does not equal the sum of items (${itemsTotal}).` });
     }
   }
-  if (input.transactionAt > new Date(Date.now() + 5 * 60 * 1000)) {
-    throw validationError({ transactionAt: "Transaction time cannot be in the future." });
+  if (input.transaction_date > new Date(Date.now() + 5 * 60 * 1000)) {
+    throw validationError({ transaction_date: "Transaction date cannot be in the future." });
   }
 
   try {
     return await withTransaction(null, async (t) => {
       const existing = await StayCharge.findOne({
-        where: { sourceSystem: POS_SOURCE, externalTransactionId: input.externalTransactionId },
+        where: { sourceSystem: POS_SOURCE, externalTransactionId: input.external_transaction_id },
+        include: [{ association: "stay", include: [{ association: "reservation", include: ["room"] }] }],
         transaction: t,
       });
       if (existing) {
-        throw conflict("DUPLICATE_TRANSACTION", "This POS transaction was already posted.", chargeView(existing));
+        throw conflict("DUPLICATE_TRANSACTION", "This POS transaction was already posted.", chargeView(existing, existing.stay.reservation, existing.stay.reservation.room));
       }
 
-      const stay = await findInHouseStayByRoom(input.roomNumber, t, true);
-      if (input.folioId && input.folioId !== stay.id) {
-        throw conflict("FOLIO_MISMATCH", "The folio does not belong to the guest currently in this room.");
+      const reservation = await Reservation.findByPk(input.reservation_id, {
+        include: ["room", "guest"],
+        transaction: t,
+        lock: { level: t.LOCK.UPDATE, of: Reservation },
+      });
+      if (!reservation) throw new AppError(404, "RESERVATION_NOT_FOUND", `Reservation ${input.reservation_id} does not exist.`);
+      if (reservation.status !== RESERVATION_STATUS.CHECKED_IN) {
+        throw conflict(
+          "RESERVATION_NOT_ACTIVE",
+          `Reservation ${reservation.reservationCode} is ${reservation.status}; only checked-in guests can charge to their room.`
+        );
       }
-      if (input.guestLastName && input.guestLastName.toLowerCase() !== stay.reservation.guest.lastName.toLowerCase()) {
-        throw conflict("GUEST_MISMATCH", "Guest last name does not match the guest in this room.");
+      if (!reservation.room || reservation.room.roomNumber !== input.room_number) {
+        throw conflict("ROOM_MISMATCH", `Room ${input.room_number} does not belong to reservation ${reservation.reservationCode}.`);
       }
-      const bill = await Bill.findOne({ where: { stayId: stay.id }, transaction: t, lock: t.LOCK.UPDATE });
-      if (!folioOpen(bill)) {
-        throw conflict("FOLIO_CLOSED", "The guest's bill is already confirmed for checkout; settle this charge directly at the POS.");
+      if (input.guest_name && !guestNameMatches(input.guest_name, reservation.guest)) {
+        throw conflict("GUEST_MISMATCH", "The guest name does not match the guest registered to this reservation.");
       }
+      const stay = await Stay.findOne({
+        where: { reservationId: reservation.id, status: STAY_STATUS.IN_HOUSE },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!stay) throw noInHouse(`Reservation ${reservation.reservationCode} has no in-house stay.`);
+      stay.reservation = reservation;
 
-      const charge = await StayCharge.create(
+      const charge = await postFolioCharge(
+        stay,
         {
-          stayId: stay.id,
           sourceSystem: POS_SOURCE,
-          externalTransactionId: input.externalTransactionId,
-          outlet: input.outlet || null,
-          category: input.category,
+          externalTransactionId: input.external_transaction_id,
+          outlet: input.outlet,
+          category: input.category || "FOOD",
           description: input.description,
           amount: input.amount,
-          items: input.items?.length ? input.items : null,
-          transactionAt: input.transactionAt,
+          items: input.items?.map((i) => ({ name: i.name, quantity: i.quantity, unitPrice: i.unit_price })),
+          transactionAt: input.transaction_date,
         },
-        { transaction: t }
+        t
       );
-      logger.info("pos_charge_posted", { chargeId: charge.id, stayId: stay.id, externalTransactionId: charge.externalTransactionId, amount: input.amount });
-      return chargeView(charge, stay);
+      logger.info("pos_charge_posted", { chargeId: charge.id, stayId: stay.id, reservationId: reservation.id, externalTransactionId: charge.externalTransactionId, amount: input.amount });
+      return chargeView(charge, reservation, reservation.room);
     });
   } catch (err) {
     // Two concurrent requests with the same transaction id: the unique index decides.
-    if (err instanceof UniqueConstraintError) {
-      throw conflict("DUPLICATE_TRANSACTION", "This POS transaction was already posted.");
-    }
+    if (err instanceof UniqueConstraintError) throw conflict("DUPLICATE_TRANSACTION", "This POS transaction was already posted.");
     throw err;
   }
 }
 
-export async function getCharge(externalTransactionId) {
+export async function getRoomCharge(externalTransactionId) {
   const charge = await StayCharge.findOne({
     where: { sourceSystem: POS_SOURCE, externalTransactionId },
     include: [{ association: "stay", include: [{ association: "reservation", include: ["room"] }] }],
   });
-  if (!charge) throw notFound("Charge");
-  return chargeView(charge, charge.stay);
+  if (!charge) throw new AppError(404, "NOT_FOUND", "Charge not found.");
+  return chargeView(charge, charge.stay.reservation, charge.stay.reservation.room);
 }

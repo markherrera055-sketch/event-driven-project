@@ -45,7 +45,7 @@ Dates are `YYYY-MM-DD` in the hotel timezone (`HOTEL_TIMEZONE`). Timestamps are 
 | GET | `/reservations/{id or code}` | R/A | Detail with guest, room, verification attempts, stay |
 | POST | `/reservations` | R | Walk-in / phone reservation (CONFIRMED) |
 | GET | `/reservations/{id}/assignable-rooms?allTypes=` | R | Rooms eligible for the stay dates (no overlapping booking, not under maintenance, not physically occupied, type not sold out). For an in-house guest: vacant and clean now |
-| PUT | `/reservations/{id}/room` | R | Assign or change the room `{ "roomId": 3 }`. CONFIRMED: reassign (previous room released). CHECKED_IN: room move (new room OCCUPIED, previous room VACANT + needs cleaning; refused once a bill exists). All checks repeated under row locks |
+| PUT | `/reservations/{id}/room` | R | Assign or change the room `{ "roomId": 3 }`. CONFIRMED: reassign (new room RESERVED, previous room AVAILABLE when nothing else is assigned to it). CHECKED_IN: room move (new room OCCUPIED, previous room DIRTY + `RoomVacated` to Housekeeping; refused once a bill exists). All checks repeated under row locks |
 | GET | `/reservations/{id}/verifications` | R/A | Verification attempts |
 | POST | `/verifications` | R | Record an ID check (returns VERIFIED or FAILED) |
 
@@ -82,6 +82,7 @@ POST /api/v1/verifications
 | POST | `/check-ins` | R | `{ "reservationId": 1 }` → stay (201) |
 | GET | `/stays?status=IN_HOUSE\|CHECKED_OUT&search=` | R/A | In-house / past stays |
 | GET | `/stays/{id}` | R/A | Folio: reservation, POS charges, bill with adjustments and payments, totals |
+| GET | `/stays/{id}/folio` | R/A | Guest folio statement: `room` (nights × rate, `basis` ACCRUED_TO_DATE / BILLED), `lines` (ROOM, RESTAURANT, OTHER_CHARGE, ADJUSTMENT, PAYMENT; payments negative), `failedPayments`, `totals { roomCharges, restaurantCharges, otherCharges, adjustments, totalCharges, payments, balance }`, `folioOpen` |
 
 ### Billing (6.0, 7.0)
 
@@ -130,18 +131,19 @@ A declined payment is a normal business outcome (201 with `status: FAILED`), not
 | Method | Path | Role | Description |
 |---|---|---|---|
 | GET | `/rooms?status=&roomType=&needsCleaning=&search=&includeInactive=&archived=` | R/A | Room board, including the current in-house guest, `displayStatus` and `reservedTonight`. `archived=true` lists deleted (archived) rooms only |
-| GET | `/room-types` | R/A | Types derived from rooms: count, capacity, rate range |
+| GET | `/room-types` | R/A | Types with `roomTypeId`: count, capacity, rate range |
 | GET | `/rooms/{id}` | R/A | One room |
-| POST | `/rooms/{id}/clean` | R/A | Housekeeping: mark the room clean / ready |
+| GET | `/rooms/{id}/status-history` | R/A | Latest 50 status transitions: from, to, reason, source, staff member, external reference |
+| POST | `/rooms/{id}/clean` | R/A | Front-desk fallback when the Housekeeping System cannot report: DIRTY / CLEANING → AVAILABLE (or RESERVED). Open housekeeping tasks become SUPERSEDED and `RoomCleaned` is published |
 
-Stored room `status` is `VACANT`, `OCCUPIED` or `MAINTENANCE`. VACANT ⇄ OCCUPIED changes only through check-in, checkout and room moves; VACANT ⇄ MAINTENANCE only by an administrator. `displayStatus` adds the derived values `AVAILABLE`, `RESERVED` (a confirmed reservation holds the room tonight), `INACTIVE` (`isActive: false`) and `DELETED` (archived). `needsCleaning` is set automatically at checkout and room moves.
+Room `status` follows the lifecycle `AVAILABLE`, `RESERVED`, `OCCUPIED`, `DIRTY`, `CLEANING`, `MAINTENANCE` (rules in [ARCHITECTURE.md §7](ARCHITECTURE.md#7-inter-system-integration)). Invalid changes return 409 `INVALID_ROOM_STATUS_TRANSITION`. `displayStatus` is the status, or `INACTIVE` (`isActive: false`) / `DELETED` (archived). `needsCleaning` is true while DIRTY or CLEANING. `?needsCleaning=true` lists those rooms.
 
 ### Admin Console (10.0)
 
 | Method | Path | Role | Description |
 |---|---|---|---|
-| POST | `/admin/rooms` | A | `{ roomNumber, roomType, capacity, nightlyRate, floor?, description?, amenities? (array or comma list), status?: VACANT\|MAINTENANCE }` |
-| PATCH | `/admin/rooms/{id}` | A | Any of the above + `isActive`. Room numbers are unique (case-insensitive). OCCUPIED rooms cannot change status or be deactivated; maintenance is refused while a guest is due tonight; deactivating / retyping is refused while bookings (assigned or by type) still need the room |
+| POST | `/admin/rooms` | A | `{ roomNumber, roomType, capacity, nightlyRate, floor?, description?, amenities? (array or comma list), status?: AVAILABLE\|MAINTENANCE }` |
+| PATCH | `/admin/rooms/{id}` | A | Any of the above + `isActive`; `status` may be `AVAILABLE` ("ready": from MAINTENANCE), `DIRTY` (from MAINTENANCE) or `MAINTENANCE` (from any status except OCCUPIED). Marking a DIRTY / CLEANING room AVAILABLE is refused (409 `ROOM_NEEDS_CLEANING`). Room numbers are unique (case-insensitive). OCCUPIED rooms cannot change status or be deactivated; maintenance is refused while a guest is due tonight; deactivating / retyping is refused while bookings (assigned or by type) still need the room |
 | DELETE | `/admin/rooms/{id}` | A | Refused if occupied or holding active reservations. Never booked → `{ mode: "deleted" }` (permanent). Has history → `{ mode: "archived" }` (soft delete, history intact) |
 | POST | `/admin/rooms/{id}/restore` | A | Bring an archived room back into service |
 | GET | `/admin/staff?search=&role=&isActive=` | A | Staff accounts |

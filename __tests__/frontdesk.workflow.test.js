@@ -227,7 +227,7 @@ describe("TC-7 Receipt and checkout (steps 30-36)", () => {
     expect(res.data.guest.fullName).toBe("Juan Dela Cruz");
   });
 
-  test("checkout saves the stay, marks reservation CHECKED_OUT and room VACANT (needs cleaning)", async () => {
+  test("checkout saves the stay, marks reservation CHECKED_OUT and room DIRTY (not available until cleaned)", async () => {
     const res = await desk.post("/checkouts", { stayId: ctx.stay.id });
     expect(res.status).toBe(201);
     expect(res.data.status).toBe("CHECKED_OUT");
@@ -235,14 +235,13 @@ describe("TC-7 Receipt and checkout (steps 30-36)", () => {
     const reservation = await desk.get(`/reservations/${ctx.reservation.id}`);
     expect(reservation.data.status).toBe("CHECKED_OUT");
     const room = await Room.findByPk(ctx.room.id);
-    expect(room.status).toBe("VACANT");
-    expect(room.needsCleaning).toBe(true);
+    expect(room.status).toBe("DIRTY");
   });
 
-  test("housekeeping marks the room clean", async () => {
+  test("the front desk can mark the room clean when housekeeping cannot report back", async () => {
     const res = await desk.post(`/rooms/${ctx.room.id}/clean`);
     expect(res.status).toBe(200);
-    expect(res.data.needsCleaning).toBe(false);
+    expect(res.data).toMatchObject({ status: "AVAILABLE", needsCleaning: false });
     expect(res.data.lastCleanedAt).toBeTruthy();
   });
 

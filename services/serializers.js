@@ -56,9 +56,11 @@ export const roomJSON = (r) => {
     description: x.description ?? null,
     amenities: Array.isArray(x.amenities) ? x.amenities : [],
     status: x.status,
+    statusChangedAt: x.statusChangedAt ?? null,
     isActive: x.isActive,
     archivedAt: x.archivedAt ?? null,
-    needsCleaning: x.needsCleaning,
+    // Convenience flag for screens: waiting for, or in, housekeeping.
+    needsCleaning: x.status === "DIRTY" || x.status === "CLEANING",
     lastCleanedAt: x.lastCleanedAt,
     lastCleanedBy: x.cleaner ? userRef(x.cleaner) : x.lastCleanedBy ?? null,
   };

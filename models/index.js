@@ -7,7 +7,11 @@ import { DataTypes } from "sequelize";
 import { sequelize } from "./db.js";
 import { User, ROLES } from "./userModel.js";
 import { Guest } from "./Guest.js";
-import { Room, ROOM_STATUS, ADMIN_SETTABLE_ROOM_STATUSES } from "./Room.js";
+import { Room, ROOM_STATUS, ADMIN_SETTABLE_ROOM_STATUSES, READY_ROOM_STATUSES, HOUSEKEEPING_ROOM_STATUSES } from "./Room.js";
+import { RoomType } from "./RoomType.js";
+import { RoomStatusLog, STATUS_CHANGE_SOURCE } from "./RoomStatusLog.js";
+import { HousekeepingTask, HOUSEKEEPING_TASK_STATUS } from "./HousekeepingTask.js";
+import { IntegrationEvent } from "./IntegrationEvent.js";
 import { Reservation, RESERVATION_STATUS, RESERVATION_SOURCE, ACTIVE_RESERVATION_STATUSES } from "./Reservation.js";
 import { IdentityVerification, VERIFICATION_RESULT, ID_TYPES } from "./IdentityVerification.js";
 import { Stay, STAY_STATUS } from "./Stay.js";
@@ -21,6 +25,27 @@ import { IntegrationOutbox, OUTBOX_STATUS, OUTBOX_TARGETS } from "./IntegrationO
 import { Session } from "./Session.js";
 
 const restrict = { onDelete: "RESTRICT", onUpdate: "CASCADE" };
+
+// RoomType 1 — 0..* Room. rooms.room_type → room_types.name, so existing code keeps using the name.
+RoomType.hasMany(Room, { foreignKey: "roomType", sourceKey: "name", as: "rooms", ...restrict });
+Room.belongsTo(RoomType, { foreignKey: "roomType", targetKey: "name", as: "type", ...restrict });
+
+/** A room type row is created the first time any room uses a new type name. */
+const ensureRoomTypes = async (names, options = {}) => {
+  const unique = [...new Set(names.filter(Boolean))];
+  if (unique.length) {
+    await RoomType.bulkCreate(unique.map((name) => ({ name })), { ignoreDuplicates: true, transaction: options.transaction });
+  }
+};
+Room.addHook("beforeCreate", (room, options) => ensureRoomTypes([room.roomType], options));
+Room.addHook("beforeBulkCreate", (rooms, options) => ensureRoomTypes(rooms.map((r) => r.roomType), options));
+Room.addHook("beforeUpdate", (room, options) => (room.changed("roomType") ? ensureRoomTypes([room.roomType], options) : undefined));
+Room.addHook("beforeBulkUpdate", (options) => (options.attributes?.roomType ? ensureRoomTypes([options.attributes.roomType], options) : undefined));
+
+// Room 1 — 0..* RoomStatusLog (audit trail of status transitions)
+Room.hasMany(RoomStatusLog, { foreignKey: "roomId", as: "statusLogs", ...restrict });
+RoomStatusLog.belongsTo(Room, { foreignKey: "roomId", as: "room", ...restrict });
+RoomStatusLog.belongsTo(User, { foreignKey: "actorUserId", as: "actor", ...restrict });
 
 // Guest 1 — 0..* Reservation  ("makes")
 Guest.hasMany(Reservation, { foreignKey: "guestId", as: "reservations", ...restrict });
@@ -62,6 +87,15 @@ Bill.hasMany(Payment, { foreignKey: "billId", as: "payments", ...restrict });
 Payment.belongsTo(Bill, { foreignKey: "billId", as: "bill", ...restrict });
 Payment.belongsTo(User, { foreignKey: "receivedBy", as: "receiver", ...restrict });
 
+// Room 1 — 0..* HousekeepingTask (references to tasks in the external Housekeeping System)
+Room.hasMany(HousekeepingTask, { foreignKey: "roomId", as: "housekeepingTasks", ...restrict });
+HousekeepingTask.belongsTo(Room, { foreignKey: "roomId", as: "room", ...restrict });
+HousekeepingTask.belongsTo(Stay, { foreignKey: "stayId", as: "stay", ...restrict });
+
+// IntegrationEvent 1 — 0..* IntegrationOutbox (one delivery row per receiving system)
+IntegrationEvent.hasMany(IntegrationOutbox, { foreignKey: "integrationEventId", as: "deliveries", ...restrict });
+IntegrationOutbox.belongsTo(IntegrationEvent, { foreignKey: "integrationEventId", as: "event", ...restrict });
+
 // Payment 1 — 0..1 Receipt  ("issues")
 Payment.hasOne(Receipt, { foreignKey: "paymentId", as: "receipt", ...restrict });
 Receipt.belongsTo(Payment, { foreignKey: "paymentId", as: "payment", ...restrict });
@@ -94,7 +128,26 @@ const COLUMN_UPGRADES = [
   ["rooms", "description", { type: DataTypes.STRING(1000), allowNull: true }],
   ["rooms", "amenities", { type: DataTypes.JSON, allowNull: true }],
   ["rooms", "archived_at", { type: DataTypes.DATE, allowNull: true }],
+  ["rooms", "status_changed_at", { type: DataTypes.DATE, allowNull: true }],
+  ["integration_outbox", "integration_event_id", { type: DataTypes.INTEGER, allowNull: true }],
+  ["integration_outbox", "last_response_status", { type: DataTypes.INTEGER, allowNull: true }],
 ];
+
+const FOREIGN_KEY_UPGRADES = [
+  ["rooms", "room_type", "room_types", "name", "fk_rooms_room_type"],
+  ["integration_outbox", "integration_event_id", "integration_events", "id", "fk_outbox_integration_event"],
+];
+
+const hasForeignKey = async (table, column, refTable) => {
+  const [rows] = await sequelize.query(
+    `SELECT 1 FROM information_schema.KEY_COLUMN_USAGE
+      WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table AND COLUMN_NAME = :column AND REFERENCED_TABLE_NAME = :refTable LIMIT 1`,
+    { replacements: { table, column, refTable } }
+  );
+  return rows.length > 0;
+};
+
+const enumSql = (values) => `ENUM(${values.map((v) => `'${v}'`).join(",")})`;
 
 export async function upgradeSchema({ log = () => {} } = {}) {
   const qi = sequelize.getQueryInterface();
@@ -109,14 +162,55 @@ export async function upgradeSchema({ log = () => {} } = {}) {
     }
   }
 
-  // rooms.status gained MAINTENANCE (ENUM values must be altered explicitly).
-  const statusType = String((await describe("rooms")).status?.type || "");
+  // Room status lifecycle. Earlier versions stored VACANT / OCCUPIED / MAINTENANCE
+  // plus a needs_cleaning flag; existing rooms are mapped onto the new statuses:
+  //   VACANT + needs cleaning → DIRTY, VACANT + assigned confirmed reservation → RESERVED, other VACANT → AVAILABLE.
+  // (needs_cleaning is left in place, unused, so no data is dropped.)
+  const roomColumns = await describe("rooms");
+  const statusType = String(roomColumns.status?.type || "");
   const wanted = Object.values(ROOM_STATUS);
-  if (!wanted.every((value) => statusType.includes(`'${value}'`))) {
+  const hasValue = (value) => statusType.includes(`'${value}'`);
+  if (!wanted.every(hasValue) || hasValue("VACANT")) {
+    const superset = [...new Set(["VACANT", "OCCUPIED", "MAINTENANCE", ...wanted])];
+    await sequelize.query(`ALTER TABLE rooms MODIFY status ${enumSql(superset)} NOT NULL DEFAULT '${ROOM_STATUS.AVAILABLE}'`);
+    if (roomColumns.needs_cleaning) {
+      await sequelize.query("UPDATE rooms SET status = 'DIRTY' WHERE status = 'VACANT' AND needs_cleaning = 1");
+    }
     await sequelize.query(
-      `ALTER TABLE rooms MODIFY status ENUM(${wanted.map((v) => `'${v}'`).join(",")}) NOT NULL DEFAULT '${ROOM_STATUS.VACANT}'`
+      `UPDATE rooms r SET r.status = 'RESERVED'
+        WHERE r.status = 'VACANT' AND EXISTS (SELECT 1 FROM reservations x WHERE x.room_id = r.id AND x.status = 'CONFIRMED')`
     );
-    applied.push("rooms.status (+MAINTENANCE)");
+    await sequelize.query("UPDATE rooms SET status = 'AVAILABLE' WHERE status = 'VACANT'");
+    await sequelize.query(`ALTER TABLE rooms MODIFY status ${enumSql(wanted)} NOT NULL DEFAULT '${ROOM_STATUS.AVAILABLE}'`);
+    applied.push("rooms.status (AVAILABLE/RESERVED/OCCUPIED/DIRTY/CLEANING/MAINTENANCE)");
+  }
+
+  // Integration source / target: fixed ENUMs → VARCHAR, so connecting a new system needs no schema change.
+  for (const [table, column] of [["integration_requests", "source"], ["integration_outbox", "target"]]) {
+    if (String((await describe(table))[column]?.type || "").startsWith("ENUM")) {
+      await sequelize.query(`ALTER TABLE ${table} MODIFY ${column} VARCHAR(30) NOT NULL`);
+      await sequelize.query(`UPDATE ${table} SET ${column} = 'BOOKING' WHERE ${column} = 'RESERVATIONS'`);
+      applied.push(`${table}.${column} (VARCHAR; RESERVATIONS → BOOKING)`);
+    }
+  }
+
+  // Room type catalogue, backfilled from the rooms' type names.
+  const [[{ missing }]] = await sequelize.query(
+    `SELECT COUNT(*) AS missing FROM (SELECT DISTINCT room_type FROM rooms) t
+       LEFT JOIN room_types rt ON rt.name = t.room_type WHERE rt.id IS NULL`
+  );
+  if (Number(missing) > 0) {
+    await sequelize.query("INSERT IGNORE INTO room_types (name, created_at, updated_at) SELECT DISTINCT room_type, NOW(), NOW() FROM rooms");
+    applied.push(`room_types (+${missing} from rooms)`);
+  }
+
+  for (const [table, column, refTable, refColumn, name] of FOREIGN_KEY_UPGRADES) {
+    if (!(await hasForeignKey(table, column, refTable))) {
+      await sequelize.query(
+        `ALTER TABLE ${table} ADD CONSTRAINT ${name} FOREIGN KEY (${column}) REFERENCES ${refTable} (${refColumn}) ON DELETE RESTRICT ON UPDATE CASCADE`
+      );
+      applied.push(`${table}.${column} → ${refTable}.${refColumn} (FK)`);
+    }
   }
 
   for (const change of applied) log(`   + ${change}`);
@@ -152,6 +246,14 @@ export {
   Room,
   ROOM_STATUS,
   ADMIN_SETTABLE_ROOM_STATUSES,
+  READY_ROOM_STATUSES,
+  HOUSEKEEPING_ROOM_STATUSES,
+  RoomType,
+  RoomStatusLog,
+  STATUS_CHANGE_SOURCE,
+  HousekeepingTask,
+  HOUSEKEEPING_TASK_STATUS,
+  IntegrationEvent,
   Reservation,
   RESERVATION_STATUS,
   RESERVATION_SOURCE,

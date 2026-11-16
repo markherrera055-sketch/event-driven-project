@@ -21,7 +21,7 @@
  * and every check is re-done against committed data right before saving.
  */
 import { Op } from "sequelize";
-import { Room, Reservation, ACTIVE_RESERVATION_STATUSES, RESERVATION_STATUS, ROOM_STATUS } from "../models/index.js";
+import { Room, Reservation, ACTIVE_RESERVATION_STATUSES, RESERVATION_STATUS, ROOM_STATUS, READY_ROOM_STATUSES } from "../models/index.js";
 import { conflict, validationError, notFound } from "../utils/errors.js";
 import { eachNight, nightsBetween, today } from "../utils/dates.js";
 
@@ -182,7 +182,46 @@ export async function assertBookable(
     }
   }
 
-  return { roomType, room };
+  return { roomType, room, rooms };
+}
+
+/** Lower is preferred when several rooms fit: ready rooms first, then rooms that housekeeping will clean in time. */
+const ASSIGN_PREFERENCE = { [ROOM_STATUS.AVAILABLE]: 0, [ROOM_STATUS.RESERVED]: 1, [ROOM_STATUS.CLEANING]: 2, [ROOM_STATUS.DIRTY]: 3, [ROOM_STATUS.OCCUPIED]: 4 };
+
+/**
+ * Picks a specific room for a stay from `rooms` (rows already locked by
+ * assertBookable in this transaction), or returns null when no single room is
+ * free for every night — the booking is then kept by room type and the front
+ * desk assigns a room later. Same rules as a manual assignment: active, large
+ * enough, not under maintenance, no overlapping active reservation, and not
+ * physically occupied when the stay starts tonight.
+ */
+export async function pickRoomForStay(rooms, { checkInDate, checkOutDate, numGuests, excludeReservationId }, transaction) {
+  const d = today();
+  const candidates = rooms
+    .filter((r) => r.isActive && !r.archivedAt && r.capacity >= numGuests && r.status !== ROOM_STATUS.MAINTENANCE)
+    .filter((r) => !(checkInDate <= d && r.status === ROOM_STATUS.OCCUPIED))
+    .sort((a, b) => ASSIGN_PREFERENCE[a.status] - ASSIGN_PREFERENCE[b.status] || a.roomNumber.localeCompare(b.roomNumber, undefined, { numeric: true }));
+  if (!candidates.length) return null;
+  const busy = await Reservation.findAll({
+    where: { ...overlapWhere({ checkInDate, checkOutDate, excludeReservationId }), roomId: { [Op.in]: candidates.map((r) => r.id) } },
+    attributes: ["roomId"],
+    transaction,
+  });
+  const busyIds = new Set(busy.map((r) => r.roomId));
+  return candidates.find((r) => !busyIds.has(r.id)) || null;
+}
+
+/** True when `roomId` can still hold this reservation for the given range (used before keeping an assignment through a change). */
+export async function roomStillFits(roomId, { checkInDate, checkOutDate, numGuests, excludeReservationId }, transaction) {
+  const room = await Room.findByPk(roomId, { transaction });
+  if (!room || !room.isActive || room.capacity < numGuests) return false;
+  const clash = await Reservation.findOne({
+    where: { ...overlapWhere({ checkInDate, checkOutDate, excludeReservationId }), roomId },
+    attributes: ["id"],
+    transaction,
+  });
+  return !clash;
 }
 
 /**
@@ -196,7 +235,7 @@ export async function findAvailableRooms({ checkInDate, checkOutDate, numGuests 
   const d = today();
   const where = { isActive: true, capacity: { [Op.gte]: numGuests }, status: { [Op.ne]: ROOM_STATUS.MAINTENANCE } };
   if (roomType) where.roomType = roomType;
-  if (forRoomMove) Object.assign(where, { status: ROOM_STATUS.VACANT, needsCleaning: false });
+  if (forRoomMove) where.status = { [Op.in]: READY_ROOM_STATUSES };
   const candidates = await Room.findAll({ where, order: [["roomNumber", "ASC"]] });
   if (!candidates.length) return [];
 

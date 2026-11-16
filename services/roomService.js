@@ -1,40 +1,44 @@
 /**
- * Room Status module (RoomStatusUpdater: setOccupied / setVacant) and the
- * room part of the Room and Staff Admin module (Administrator.manageRooms).
+ * Rooms: listing, room types, and the room part of the Room and Staff Admin
+ * module (Administrator.manageRooms). Status changes go through
+ * roomStatusService (the lifecycle state machine), never directly.
  *
- * Status rules (prevent invalid transitions):
- *   VACANT ⇄ OCCUPIED      only by check-in / checkout / room move (never by hand)
- *   VACANT ⇄ MAINTENANCE   administrator; not while a guest is due in tonight
- *   isActive true ⇄ false  administrator (Inactive = out of inventory)
- * The status shown to staff (displayStatus) adds derived values:
- *   RESERVED  vacant room held by a confirmed reservation covering tonight
- *   INACTIVE  out of service (isActive = false)
- * Editing reservation information never changes a room's stored status.
+ * Administrator status rules:
+ *   → MAINTENANCE   from any status except OCCUPIED; not while a guest is due in tonight
+ *   MAINTENANCE →   AVAILABLE ("ready": RESERVED if a confirmed reservation is assigned) or DIRTY (needs cleaning)
+ *   isActive true ⇄ false  (Inactive = out of inventory)
+ * displayStatus = the stored status, or INACTIVE / DELETED for rooms out of inventory.
  */
 import { Op, fn, col, UniqueConstraintError } from "sequelize";
-import { Room, Reservation, ROOM_STATUS, ACTIVE_RESERVATION_STATUSES, RESERVATION_STATUS } from "../models/index.js";
+import {
+  Room,
+  RoomType,
+  Reservation,
+  HousekeepingTask,
+  ROOM_STATUS,
+  READY_ROOM_STATUSES,
+  HOUSEKEEPING_ROOM_STATUSES,
+  ACTIVE_RESERVATION_STATUSES,
+  RESERVATION_STATUS,
+  STATUS_CHANGE_SOURCE,
+  HOUSEKEEPING_TASK_STATUS,
+} from "../models/index.js";
 import { conflict, notFound } from "../utils/errors.js";
 import { today } from "../utils/dates.js";
 import { assertRoomRemovable, lockRoomTypes, peekRoomType } from "./availabilityService.js";
+import { transition, readyStatusFor, lockRoomRow, makeReadyAfterCleaning, STATUS_REASON } from "./roomStatusService.js";
+import { emit, EVENTS } from "./domainEvents.js";
+import { roomCleanedData } from "./eventPayloads.js";
 import { roomJSON } from "./serializers.js";
 import { withTransaction } from "./tx.js";
 import { logger } from "../utils/logger.js";
 
-export const DISPLAY_STATUS = Object.freeze({
-  AVAILABLE: "AVAILABLE",
-  RESERVED: "RESERVED",
-  OCCUPIED: "OCCUPIED",
-  MAINTENANCE: "MAINTENANCE",
-  INACTIVE: "INACTIVE",
-  DELETED: "DELETED",
-});
+export const DISPLAY_STATUS = Object.freeze({ ...ROOM_STATUS, INACTIVE: "INACTIVE", DELETED: "DELETED" });
 
-const displayStatusOf = (room, reservedTonight) => {
+const displayStatusOf = (room) => {
   if (room.archivedAt) return DISPLAY_STATUS.DELETED;
   if (!room.isActive) return DISPLAY_STATUS.INACTIVE;
-  if (room.status === ROOM_STATUS.OCCUPIED) return DISPLAY_STATUS.OCCUPIED;
-  if (room.status === ROOM_STATUS.MAINTENANCE) return DISPLAY_STATUS.MAINTENANCE;
-  return reservedTonight ? DISPLAY_STATUS.RESERVED : DISPLAY_STATUS.AVAILABLE;
+  return room.status;
 };
 
 /**
@@ -46,7 +50,9 @@ export async function listRooms({ status, roomType, search, needsCleaning, inclu
   if (!includeInactive && !archived) where.isActive = true;
   if (status) where.status = status;
   if (roomType) where.roomType = roomType;
-  if (needsCleaning !== undefined) where.needsCleaning = needsCleaning;
+  if (needsCleaning !== undefined && !status) {
+    where.status = needsCleaning ? { [Op.in]: HOUSEKEEPING_ROOM_STATUSES } : { [Op.notIn]: HOUSEKEEPING_ROOM_STATUSES };
+  }
   if (search) where.roomNumber = { [Op.like]: `%${search}%` };
   const rooms = await Room.findAll({
     where,
@@ -64,7 +70,7 @@ export async function listRooms({ status, roomType, search, needsCleaning, inclu
     ],
   });
 
-  // Confirmed reservations holding a room tonight (derived "Reserved" status).
+  // Confirmed reservations arriving into a room tonight (shown on the room board).
   const d = today();
   const holds = rooms.length
     ? await Reservation.findAll({
@@ -85,7 +91,7 @@ export async function listRooms({ status, roomType, search, needsCleaning, inclu
     const hold = holdByRoom.get(r.id);
     return {
       ...roomJSON(r),
-      displayStatus: displayStatusOf(r, !!hold),
+      displayStatus: displayStatusOf(r),
       currentReservation: current
         ? {
             id: current.id,
@@ -122,7 +128,9 @@ export async function listRoomTypes() {
     order: [["roomType", "ASC"]],
     raw: true,
   });
+  const ids = new Map((await RoomType.findAll({ where: { name: rows.map((r) => r.roomType) }, attributes: ["id", "name"] })).map((t) => [t.name.toLowerCase(), t.id]));
   return rows.map((r) => ({
+    roomTypeId: ids.get(r.roomType.toLowerCase()) ?? null,
     roomType: r.roomType,
     roomCount: Number(r.roomCount),
     maxCapacity: Number(r.maxCapacity),
@@ -165,7 +173,10 @@ const ROOM_FIELDS = ["roomNumber", "roomType", "floor", "capacity", "nightlyRate
 
 export async function createRoom(data, actor) {
   await assertNumberFree(data.roomNumber);
-  const values = { status: data.status === ROOM_STATUS.MAINTENANCE ? ROOM_STATUS.MAINTENANCE : ROOM_STATUS.VACANT };
+  const values = {
+    status: data.status === ROOM_STATUS.MAINTENANCE ? ROOM_STATUS.MAINTENANCE : ROOM_STATUS.AVAILABLE,
+    statusChangedAt: new Date(),
+  };
   for (const key of ROOM_FIELDS) if (data[key] !== undefined) values[key] = data[key];
   if (data.isActive !== undefined) values.isActive = data.isActive;
   const room = await guardUniqueNumber(() => Room.create(values));
@@ -200,6 +211,27 @@ const lockRoom = async (id, transaction) => {
 
 const codes = (rows) => rows.slice(0, 3).map((r) => r.reservationCode).join(", ") + (rows.length > 3 ? ` and ${rows.length - 3} more` : "");
 
+/**
+ * Status requested by an administrator → status to transition to, or null for
+ * "no change". AVAILABLE means "ready for guests" (RESERVED when a confirmed
+ * reservation is assigned); DIRTY means "needs cleaning" (already true while
+ * the room is DIRTY or CLEANING). Requests the lifecycle does not allow (e.g.
+ * marking a DIRTY room ready, which is housekeeping's job) are refused.
+ */
+async function adminTargetStatus(room, requested, transaction) {
+  if (!requested) return null;
+  if (requested === ROOM_STATUS.AVAILABLE) {
+    if (READY_ROOM_STATUSES.includes(room.status)) return null;
+    if (HOUSEKEEPING_ROOM_STATUSES.includes(room.status)) {
+      throw conflict("ROOM_NEEDS_CLEANING", `Room ${room.roomNumber} is ${room.status}. It becomes available when housekeeping completes cleaning (or use "Mark clean").`);
+    }
+    if (room.status === ROOM_STATUS.OCCUPIED) return ROOM_STATUS.AVAILABLE; // refused by the OCCUPIED rule
+    return readyStatusFor(room.id, transaction);
+  }
+  if (requested === ROOM_STATUS.DIRTY && HOUSEKEEPING_ROOM_STATUSES.includes(room.status)) return null;
+  return requested === room.status ? null : requested;
+}
+
 export async function updateRoom(id, changes, actor) {
   return withTransaction(null, async (transaction) => {
     const room = await lockRoom(id, transaction);
@@ -210,13 +242,14 @@ export async function updateRoom(id, changes, actor) {
     const bookings = await assignedBookings(room, transaction);
     const deactivating = changes.isActive === false && room.isActive;
     const typeChanging = !!changes.roomType && changes.roomType !== room.roomType;
-    const statusChanging = !!changes.status && changes.status !== room.status;
+    const targetStatus = await adminTargetStatus(room, changes.status, transaction);
+    const statusChanging = !!targetStatus;
 
-    // Status transitions. OCCUPIED is controlled by check-in / checkout / room move only.
+    // OCCUPIED is controlled by check-in / checkout / room move only.
     if (statusChanging && room.status === ROOM_STATUS.OCCUPIED) {
       throw conflict("ROOM_OCCUPIED", `Room ${room.roomNumber} is occupied. Its status changes automatically at checkout or room move.`);
     }
-    if (statusChanging && changes.status === ROOM_STATUS.MAINTENANCE && bookings.tonight.length) {
+    if (statusChanging && targetStatus === ROOM_STATUS.MAINTENANCE && bookings.tonight.length) {
       throw conflict("ROOM_IN_USE", `A guest is due in room ${room.roomNumber} tonight (${codes(bookings.tonight)}). Reassign the reservation first.`);
     }
     if (deactivating && (room.status === ROOM_STATUS.OCCUPIED || bookings.all.length > 0)) {
@@ -231,15 +264,18 @@ export async function updateRoom(id, changes, actor) {
     // Reservations booked by type (not yet assigned) still need enough rooms of the type.
     if (room.isActive && (deactivating || typeChanging)) {
       await assertRoomRemovable(room, {}, transaction);
-    } else if (room.isActive && statusChanging && changes.status === ROOM_STATUS.MAINTENANCE) {
+    } else if (room.isActive && statusChanging && targetStatus === ROOM_STATUS.MAINTENANCE) {
       await assertRoomRemovable(room, { tonightOnly: true }, transaction);
     }
 
     const update = {};
     for (const key of [...ROOM_FIELDS, "isActive"]) if (changes[key] !== undefined) update[key] = changes[key];
-    if (statusChanging) update.status = changes.status;
     await guardUniqueNumber(() => room.update(update, { transaction }));
-    logger.info("room_updated", { roomId: room.id, fields: Object.keys(update), by: actor?.id });
+    if (statusChanging) {
+      const reason = targetStatus === ROOM_STATUS.MAINTENANCE ? STATUS_REASON.MAINTENANCE_STARTED : STATUS_REASON.MAINTENANCE_ENDED;
+      await transition(room, targetStatus, { reason, source: STATUS_CHANGE_SOURCE.ADMIN, actor }, transaction);
+    }
+    logger.info("room_updated", { roomId: room.id, fields: Object.keys(update), status: targetStatus || undefined, by: actor?.id });
     return {
       ...roomJSON(room),
       // Future guests still assigned to a room that is under maintenance (shown as a warning).
@@ -295,29 +331,26 @@ export async function restoreRoom(id, actor) {
   return roomJSON(room);
 }
 
-/** RoomStatusUpdater.setOccupied — called inside the check-in transaction. */
-export async function setOccupied(roomId, transaction) {
-  const [count] = await Room.update(
-    { status: ROOM_STATUS.OCCUPIED },
-    { where: { id: roomId, status: ROOM_STATUS.VACANT }, transaction }
-  );
-  if (count !== 1) throw conflict("ROOM_OCCUPIED", "The room is already occupied or under maintenance.");
-}
-
 /**
- * RoomStatusUpdater.setVacant — called inside the checkout / room-move
- * transaction. The room is flagged for housekeeping at the same time.
+ * Front-desk fallback for when the Housekeeping System cannot report back:
+ * DIRTY / CLEANING → ready. Any open housekeeping task for the room is marked
+ * SUPERSEDED, and RoomCleaned is published so Housekeeping can close its task.
  */
-export async function setVacant(roomId, transaction) {
-  await Room.update({ status: ROOM_STATUS.VACANT, needsCleaning: true }, { where: { id: roomId }, transaction });
-}
-
-/** Housekeeping: mark a room as cleaned / ready for the next guest. */
 export async function markClean(roomId, actor) {
-  const room = await Room.findByPk(roomId);
-  if (!room) throw notFound("Room");
-  if (!room.needsCleaning) throw conflict("ALREADY_CLEAN", `Room ${room.roomNumber} is already marked clean.`);
-  await room.update({ needsCleaning: false, lastCleanedAt: new Date(), lastCleanedBy: actor.id });
-  logger.info("room_cleaned", { roomId: room.id, by: actor.id });
-  return roomJSON(room);
+  await withTransaction(null, async (transaction) => {
+    const room = await lockRoomRow(roomId, transaction);
+    if (!HOUSEKEEPING_ROOM_STATUSES.includes(room.status)) {
+      throw conflict("ALREADY_CLEAN", `Room ${room.roomNumber} does not need cleaning (status ${room.status}).`);
+    }
+    const now = new Date();
+    await makeReadyAfterCleaning(room, { reason: STATUS_REASON.MANUAL_CLEAN, source: STATUS_CHANGE_SOURCE.FRONT_DESK, actor }, transaction);
+    await room.update({ lastCleanedAt: now, lastCleanedBy: actor.id }, { transaction });
+    await HousekeepingTask.update(
+      { status: HOUSEKEEPING_TASK_STATUS.SUPERSEDED, remarks: `Marked clean at the front desk by ${actor.fullName || `user ${actor.id}`}` },
+      { where: { roomId: room.id, status: [HOUSEKEEPING_TASK_STATUS.OPEN, HOUSEKEEPING_TASK_STATUS.IN_PROGRESS] }, transaction }
+    );
+    await emit(EVENTS.ROOM_CLEANED, roomCleanedData(room, { completedAt: now, origin: "FRONT_DESK" }), { transaction });
+    logger.info("room_cleaned", { roomId: room.id, status: room.status, by: actor.id });
+  });
+  return getRoom(roomId);
 }

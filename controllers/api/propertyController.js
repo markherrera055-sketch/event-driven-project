@@ -5,6 +5,7 @@ import { ROOM_STATUS } from "../../models/index.js";
 import { addDays, today } from "../../utils/dates.js";
 import * as guests from "../../services/guestService.js";
 import * as rooms from "../../services/roomService.js";
+import * as roomStatus from "../../services/roomStatusService.js";
 import { getDashboard } from "../../services/dashboardService.js";
 import { buildReport } from "../../services/reportService.js";
 import { gatewayInfo } from "../../integrations/paymentGateway/index.js";
@@ -49,6 +50,7 @@ export const listRooms = asyncHandler(async (req, res) => {
 export const listRoomTypes = asyncHandler(async (req, res) => ok(res, await rooms.listRoomTypes()));
 export const showRoom = asyncHandler(async (req, res) => ok(res, await rooms.getRoom(Number(req.params.id))));
 export const markRoomClean = asyncHandler(async (req, res) => ok(res, await rooms.markClean(Number(req.params.id), req.user)));
+export const roomStatusHistory = asyncHandler(async (req, res) => ok(res, await roomStatus.statusHistory(Number(req.params.id))));
 
 // ── Dashboard / reports / session info ──────────────────────────────────────
 export const dashboard = asyncHandler(async (req, res) => ok(res, await getDashboard()));

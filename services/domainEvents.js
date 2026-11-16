@@ -1,8 +1,13 @@
 /**
- * Domain events raised by the core front-desk services (check-in, checkout,
- * reservation changes). The core does not know which external systems exist:
- * the integration layer registers subscriptions and turns events into outbox
- * rows written in the SAME transaction as the business change.
+ * Domain events raised by the core Frontdesk / PMS services. The core does not
+ * know which external systems exist: the integration layer subscribes at
+ * start-up, records each event in integration_events and turns it into
+ * webhook deliveries (integration_outbox) in the SAME transaction as the
+ * business change — so an event is never published for a change that was
+ * rolled back, and never lost for one that was committed.
+ *
+ * Payloads (services/eventPayloads.js) are the published integration contract:
+ * snake_case, references and statuses only, never guest contact or ID data.
  */
 const subscribers = [];
 
@@ -18,11 +23,34 @@ export const emit = async (eventType, payload, { transaction } = {}) => {
 };
 
 export const EVENTS = Object.freeze({
-  RESERVATION_CREATED: "reservation.created",
-  RESERVATION_UPDATED: "reservation.updated",
-  RESERVATION_CANCELLED: "reservation.cancelled",
-  RESERVATION_CHECKED_IN: "reservation.checked_in",
-  RESERVATION_CHECKED_OUT: "reservation.checked_out",
-  STAY_CHECKED_IN: "stay.checked_in",
-  STAY_CHECKED_OUT: "stay.checked_out",
+  RESERVATION_CREATED: "ReservationCreated",
+  RESERVATION_UPDATED: "ReservationUpdated",
+  RESERVATION_CANCELLED: "ReservationCancelled",
+  GUEST_CHECKED_IN: "GuestCheckedIn",
+  GUEST_CHECKED_OUT: "GuestCheckedOut",
+  ROOM_VACATED: "RoomVacated",
+  ROOM_STATUS_CHANGED: "RoomStatusChanged",
+  CLEANING_TASK_CREATED: "CleaningTaskCreated",
+  CLEANING_STARTED: "CleaningStarted",
+  CLEANING_COMPLETED: "CleaningCompleted",
+  ROOM_CLEANED: "RoomCleaned",
+  ROOM_CHARGE_POSTED: "RoomChargePosted",
+  GUEST_FOLIO_UPDATED: "GuestFolioUpdated",
+});
+
+/** Which record an event is about (used for the event log index). */
+export const EVENT_AGGREGATE = Object.freeze({
+  ReservationCreated: ["RESERVATION", "reservation_id"],
+  ReservationUpdated: ["RESERVATION", "reservation_id"],
+  ReservationCancelled: ["RESERVATION", "reservation_id"],
+  GuestCheckedIn: ["RESERVATION", "reservation_id"],
+  GuestCheckedOut: ["RESERVATION", "reservation_id"],
+  RoomVacated: ["ROOM", "room_id"],
+  RoomStatusChanged: ["ROOM", "room_id"],
+  CleaningTaskCreated: ["ROOM", "room_id"],
+  CleaningStarted: ["ROOM", "room_id"],
+  CleaningCompleted: ["ROOM", "room_id"],
+  RoomCleaned: ["ROOM", "room_id"],
+  RoomChargePosted: ["STAY", "stay_id"],
+  GuestFolioUpdated: ["STAY", "stay_id"],
 });

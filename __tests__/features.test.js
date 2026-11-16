@@ -226,7 +226,7 @@ describe("Editable assigned room", () => {
     expect(rToday.room).toBeNull();
 
     const room102 = await roomByNumber("102");
-    expect(room102.status).toBe("VACANT"); // today's status alone would wrongly say "available"
+    expect(room102.status).toBe("RESERVED"); // held by tomorrow's booking, yet eligibility is decided by dates
 
     const eligible = (await desk.get(`/reservations/${rToday.id}/assignable-rooms`)).data.map((r) => r.roomNumber);
     expect(eligible).toEqual(expect.arrayContaining(["101", "103", "105"]));
@@ -274,7 +274,7 @@ describe("Editable assigned room", () => {
     const res = await desk.put(`/reservations/${rOther.id}/room`, { roomId: r105.id });
     expect(res.status).toBe(409);
     expect(res.error.code).toBe("ROOM_UNDER_MAINTENANCE");
-    expect((await admin.patch(`/admin/rooms/${r105.id}`, { status: "VACANT" })).data.status).toBe("VACANT");
+    expect((await admin.patch(`/admin/rooms/${r105.id}`, { status: "AVAILABLE" })).data.status).toBe("AVAILABLE");
   });
 
   test("two clerks assigning the same room at once: exactly one succeeds", async () => {
@@ -313,11 +313,11 @@ describe("Editable assigned room", () => {
     expect(extra.error.code).toBe("NO_AVAILABILITY");
   });
 
-  test("in-house room move: new room occupied, previous room vacant + needs cleaning, stay kept", async () => {
+  test("in-house room move: new room occupied, previous room DIRTY, stay kept", async () => {
     for (const roomNumber of ["205", "206"]) {
       expect((await admin.post("/admin/rooms", { roomNumber, roomType: "Deluxe", capacity: 2, nightlyRate: "3600.00" })).status).toBe(201);
     }
-    await Room.update({ needsCleaning: true }, { where: { roomNumber: "206" } });
+    await Room.update({ status: "DIRTY" }, { where: { roomNumber: "206" } });
 
     const r204 = await roomByNumber("204");
     const res = (await book(desk, { roomId: r204.id, from: D0, to: D(2) })).data;
@@ -338,7 +338,7 @@ describe("Editable assigned room", () => {
     expect(moved.data.status).toBe("CHECKED_IN");
 
     const [old, now] = [await roomByNumber("204"), await roomByNumber("205")];
-    expect(old).toMatchObject({ status: "VACANT", needsCleaning: true });
+    expect(old.status).toBe("DIRTY");
     expect(now.status).toBe("OCCUPIED");
     const stayRow = await Stay.findByPk(stay.id);
     expect(stayRow.status).toBe("IN_HOUSE");
@@ -369,7 +369,7 @@ describe("Room management", () => {
       amenities: "Wi-Fi, Smart TV, wi-fi ,  Mini bar",
     });
     expect(res.status).toBe(201);
-    expect(res.data).toMatchObject({ roomNumber: "501", floor: "5", status: "VACANT", isActive: true, amenities: ["Wi-Fi", "Smart TV", "Mini bar"] });
+    expect(res.data).toMatchObject({ roomNumber: "501", floor: "5", status: "AVAILABLE", isActive: true, amenities: ["Wi-Fi", "Smart TV", "Mini bar"] });
     suite = res.data;
     expect((await admin.get(`/rooms/${suite.id}`)).data.description).toBe("Corner suite with sea view");
   });
@@ -408,10 +408,10 @@ describe("Room management", () => {
     expect(res.error.code).toBe("ROOM_IN_USE");
   });
 
-  test("the derived Reserved status reflects reservations holding a room tonight", async () => {
+  test("a room with an assigned confirmed reservation is RESERVED", async () => {
     const rooms = (await desk.get("/rooms")).data;
     const r103 = rooms.find((r) => r.roomNumber === "103");
-    expect(r103.status).toBe("VACANT");
+    expect(r103.status).toBe("RESERVED");
     expect(r103.displayStatus).toBe("RESERVED");
     expect(r103.reservedTonight.reservationCode).toMatch(/^RSV-/);
     expect(rooms.find((r) => r.roomNumber === "205").displayStatus).toBe("OCCUPIED");
@@ -487,7 +487,7 @@ describe("Room management", () => {
 
     const dash = await admin.get("/dashboard");
     expect(dash.data.rooms.maintenance).toBe(1);
-    expect((await admin.patch(`/admin/rooms/${loft.id}`, { status: "VACANT" })).data.status).toBe("VACANT");
+    expect((await admin.patch(`/admin/rooms/${loft.id}`, { status: "AVAILABLE" })).data.status).toBe("AVAILABLE");
   });
 
   test("room changes persist across a fresh read and the dashboard still works", async () => {

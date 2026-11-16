@@ -85,7 +85,7 @@ describe("Admin Console: rooms and staff", () => {
   test("administrator creates and updates a room; duplicates are refused", async () => {
     const created = await admin.post("/admin/rooms", { roomNumber: "501", roomType: "Suite", capacity: 2, nightlyRate: "7500.00" });
     expect(created.status).toBe(201);
-    expect(created.data).toMatchObject({ roomNumber: "501", status: "VACANT", nightlyRate: 7500 });
+    expect(created.data).toMatchObject({ roomNumber: "501", status: "AVAILABLE", nightlyRate: 7500 });
     const dup = await admin.post("/admin/rooms", { roomNumber: "501", roomType: "Suite", capacity: 2, nightlyRate: 7500 });
     expect(dup.status).toBe(409);
     const updated = await admin.patch(`/admin/rooms/${created.data.id}`, { nightlyRate: 7800, isActive: false });

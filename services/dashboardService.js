@@ -1,7 +1,8 @@
 /**
  * Dashboard: operational summary derived from the existing records (no extra
- * tables). Room counts follow RoomStatus (VACANT / OCCUPIED) from the class
- * diagram; "reserved today" = confirmed arrivals for today.
+ * tables). Room counts follow the room status lifecycle: "vacant" = every
+ * in-service room not occupied or under maintenance, split into ready
+ * (AVAILABLE / RESERVED) and waiting for housekeeping (DIRTY / CLEANING).
  */
 import { Op, fn, col } from "sequelize";
 import {
@@ -11,6 +12,8 @@ import {
   Payment,
   IntegrationOutbox,
   ROOM_STATUS,
+  READY_ROOM_STATUSES,
+  HOUSEKEEPING_ROOM_STATUSES,
   RESERVATION_STATUS,
   BILL_STATUS,
   PAYMENT_STATUS,
@@ -44,7 +47,7 @@ export async function getDashboard() {
     needsCleaning,
   ] = await Promise.all([
     Room.count({ where: { isActive: true } }),
-    Room.count({ where: { isActive: true, status: ROOM_STATUS.VACANT } }),
+    Room.count({ where: { isActive: true, status: [...READY_ROOM_STATUSES, ...HOUSEKEEPING_ROOM_STATUSES] } }),
     Room.count({ where: { isActive: true, status: ROOM_STATUS.OCCUPIED } }),
     Room.count({ where: { isActive: false, archivedAt: null } }),
     Reservation.count({ where: { status: RESERVATION_STATUS.CONFIRMED, checkInDate: d } }),
@@ -61,7 +64,7 @@ export async function getDashboard() {
     }),
     Payment.count({ where: { status: PAYMENT_STATUS.FAILED, processedAt: { [Op.gte]: dayStart } } }),
     IntegrationOutbox.count({ where: { status: OUTBOX_STATUS.FAILED } }),
-    Room.count({ where: { isActive: true, needsCleaning: true } }),
+    Room.count({ where: { isActive: true, status: HOUSEKEEPING_ROOM_STATUSES } }),
   ]);
 
   const recentPayments = await Payment.findAll({
@@ -84,7 +87,7 @@ export async function getDashboard() {
 
   return {
     date: d,
-    rooms: { total: totalRooms, vacant: vacantRooms, occupied: occupiedRooms, outOfService: inactiveRooms, occupancyRate: totalRooms ? Math.round((occupiedRooms / totalRooms) * 100) : 0, needsCleaning, ready: await Room.count({ where: { isActive: true, status: ROOM_STATUS.VACANT, needsCleaning: false } }), maintenance: await Room.count({ where: { isActive: true, status: ROOM_STATUS.MAINTENANCE } }) },
+    rooms: { total: totalRooms, vacant: vacantRooms, occupied: occupiedRooms, outOfService: inactiveRooms, occupancyRate: totalRooms ? Math.round((occupiedRooms / totalRooms) * 100) : 0, needsCleaning, ready: await Room.count({ where: { isActive: true, status: READY_ROOM_STATUSES } }), maintenance: await Room.count({ where: { isActive: true, status: ROOM_STATUS.MAINTENANCE } }) },
     arrivals: { today: arrivalsToday, late: lateArrivals, unassigned: unassignedArrivals },
     inHouse,
     departures: { today: departuresToday, overdue: overdueDepartures },

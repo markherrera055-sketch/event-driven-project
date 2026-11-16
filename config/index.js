@@ -26,6 +26,31 @@ const int = (value, fallback) => {
 const bool = (value, fallback = false) =>
   value === undefined ? fallback : ["1", "true", "yes", "on"].includes(String(value).toLowerCase());
 
+const list = (value) =>
+  String(value || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+/**
+ * Settings of one external system, read from <PREFIX>_* variables. A legacy
+ * prefix (e.g. RESERVATION_* for the booking system) is used as a fallback so
+ * existing .env files keep working.
+ */
+function integrationClient(prefix, legacyPrefix) {
+  const read = (name) => process.env[`${prefix}_${name}`] || (legacyPrefix && process.env[`${legacyPrefix}_${name}`]) || "";
+  return {
+    apiKey: read("API_KEY"),
+    // Outbound webhooks (PMS → system). Empty URL = no webhooks for this system.
+    webhookUrl: read("WEBHOOK_URL"),
+    webhookSecret: read("WEBHOOK_SECRET"),
+    // Optional override of the default event subscription (comma-separated event names).
+    webhookEvents: list(read("WEBHOOK_EVENTS")),
+    // Inbound request signing (system → PMS). When set, every request must carry a valid HMAC signature.
+    inboundSecret: read("INBOUND_SECRET"),
+  };
+}
+
 const sessionSecret = process.env.SESSION_SECRET;
 if (isProduction && (!sessionSecret || sessionSecret.length < 32)) {
   throw new Error("SESSION_SECRET must be set (>= 32 characters) in production.");
@@ -72,15 +97,16 @@ export const config = {
     outboxIntervalMs: int(process.env.INTEGRATION_OUTBOX_INTERVAL_MS, 15000),
     outboxMaxAttempts: int(process.env.INTEGRATION_OUTBOX_MAX_ATTEMPTS, 8),
     webhookTimeoutMs: int(process.env.INTEGRATION_WEBHOOK_TIMEOUT_MS, 10000),
-    pos: {
-      apiKey: process.env.POS_API_KEY || "",
-      webhookUrl: process.env.POS_WEBHOOK_URL || "",
-      webhookSecret: process.env.POS_WEBHOOK_SECRET || "",
-    },
-    reservations: {
-      apiKey: process.env.RESERVATION_API_KEY || "",
-      webhookUrl: process.env.RESERVATION_WEBHOOK_URL || "",
-      webhookSecret: process.env.RESERVATION_WEBHOOK_SECRET || "",
+    // Integration endpoints refuse plain HTTP (behind a TLS proxy set TRUST_PROXY=true).
+    requireHttps: bool(process.env.INTEGRATION_REQUIRE_HTTPS, isProduction),
+    // Max clock difference accepted on signed inbound requests (replay window).
+    signatureToleranceSeconds: int(process.env.INTEGRATION_SIGNATURE_TOLERANCE_SECONDS, 300),
+    // One entry per external system. An empty API key disables that system.
+    clients: {
+      BOOKING: integrationClient("BOOKING", "RESERVATION"),
+      POS: integrationClient("POS"),
+      HOUSEKEEPING: integrationClient("HOUSEKEEPING"),
+      HR: integrationClient("HR"),
     },
   },
 };

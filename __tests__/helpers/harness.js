@@ -3,7 +3,9 @@
  * and small HTTP clients for staff (cookie session + CSRF) and integrations
  * (API key + Idempotency-Key). No mocks: every request hits MySQL.
  */
+import http from "http";
 import { Sequelize } from "sequelize";
+import { signPayload } from "../../integrations/shared/signature.js";
 import { config } from "../../config/index.js";
 import { sequelize, syncSchema, Room, User, ROLES } from "../../models/index.js";
 import { hashPassword } from "../../services/authService.js";
@@ -111,20 +113,78 @@ export class StaffClient {
 let keySeq = 0;
 export const newKey = (prefix = "test") => `${prefix}-${Date.now()}-${++keySeq}`;
 
-/** External-system client: API key + Idempotency-Key. */
+/**
+ * External-system client (a simulated member system): API key + Idempotency-Key,
+ * and HMAC request signing when constructed with a signing secret.
+ */
 export class IntegrationClient {
-  constructor(base, system, apiKey) {
+  constructor(base, system, apiKey, { signingSecret } = {}) {
     this.base = `${base}/api/v1/integrations/${system}`;
     this.apiKey = apiKey;
+    this.signingSecret = signingSecret;
   }
-  async call(method, path, body, { key, apiKey = this.apiKey, idempotencyKey } = {}) {
+  async call(method, path, body, { key, apiKey = this.apiKey, idempotencyKey, sign = true, timestamp, signature } = {}) {
     const headers = { Accept: "application/json" };
     if (apiKey) headers["X-Api-Key"] = apiKey;
-    if (body !== undefined) headers["Content-Type"] = "application/json";
+    const raw = body !== undefined ? JSON.stringify(body) : undefined;
+    if (raw !== undefined) headers["Content-Type"] = "application/json";
     const ik = idempotencyKey === undefined ? (method === "GET" ? undefined : key || newKey()) : idempotencyKey;
     if (ik) headers["Idempotency-Key"] = ik;
-    const res = await fetch(this.base + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+    if (this.signingSecret && sign && method !== "GET") {
+      const ts = timestamp ?? Math.floor(Date.now() / 1000).toString();
+      headers["X-Timestamp"] = ts;
+      headers["X-Signature"] = signature ?? signPayload(this.signingSecret, ts, raw ?? "");
+    }
+    const res = await fetch(this.base + path, { method, headers, body: raw });
     const json = await res.json().catch(() => null);
     return { status: res.status, body: json, data: json?.data, error: json?.error, headers: res.headers, key: ik };
   }
+  get(path, opts) {
+    return this.call("GET", path, undefined, opts);
+  }
+  post(path, body = {}, opts) {
+    return this.call("POST", path, body, opts);
+  }
+  patch(path, body = {}, opts) {
+    return this.call("PATCH", path, body, opts);
+  }
+}
+
+export const RECEIVER_PORTS = { BOOKING: 39123, POS: 39124, HOUSEKEEPING: 39125 };
+
+/**
+ * Local HTTP server standing in for a member system's webhook endpoint.
+ * receiver.respondWith(status) sets the HTTP status it answers with (to
+ * simulate an outage); every request is recorded with its raw body.
+ */
+export async function startReceiver(system, secret) {
+  const received = [];
+  let status = 200;
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (c) => (raw += c));
+    req.on("end", () => {
+      const ts = req.headers["x-pms-timestamp"];
+      received.push({
+        headers: req.headers,
+        raw,
+        body: JSON.parse(raw || "null"),
+        signatureValid: !!secret && req.headers["x-pms-signature"] === signPayload(secret, ts, raw),
+        answeredWith: status,
+      });
+      res.writeHead(status).end(status < 300 ? "ok" : "unavailable");
+    });
+  });
+  await new Promise((r) => server.listen(RECEIVER_PORTS[system], "127.0.0.1", r));
+  return {
+    received,
+    respondWith(code) {
+      status = code;
+    },
+    events: (name) => received.filter((r) => r.answeredWith < 300 && (!name || r.body.event === name)).map((r) => r.body),
+    clear() {
+      received.length = 0;
+    },
+    close: () => new Promise((r) => server.close(r)),
+  };
 }

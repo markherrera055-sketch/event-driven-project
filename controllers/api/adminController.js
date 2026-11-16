@@ -16,7 +16,8 @@ const roomSchema = {
   nightlyRate: v.money({ required: true, min: 0.01 }),
   description: v.string({ max: 1000 }),
   amenities: v.stringList({ maxItems: 30, itemMax: 40 }),
-  // Only VACANT ("Available") and MAINTENANCE can be set by hand; OCCUPIED comes from check-in.
+  // AVAILABLE ("ready"), DIRTY ("needs cleaning") and MAINTENANCE can be requested by hand;
+  // the room status lifecycle decides whether the change is allowed (roomStatusService).
   status: v.enum(ADMIN_SETTABLE_ROOM_STATUSES),
   isActive: v.bool(),
 };

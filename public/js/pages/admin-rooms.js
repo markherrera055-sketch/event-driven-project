@@ -16,20 +16,30 @@ let rooms = [];
 let types = [];
 const showDeleted = () => $("#show-deleted").checked;
 
-// Status choices an administrator can make. Occupied (check-in) and Reserved
-// (derived from reservations) are never set by hand.
+// Status choices an administrator can make. Occupied (check-in), Reserved
+// (reservation assigned) and Cleaning (housekeeping) are never set by hand.
 const STATUS_CHOICES = [
-  ["AVAILABLE", "Available", "Can be assigned to reservations."],
+  ["AVAILABLE", "Available / ready", "Ready for guests (shown as Reserved while a confirmed reservation is assigned)."],
+  ["DIRTY", "Needs cleaning", "Waiting for housekeeping; becomes available when cleaning is completed."],
   ["MAINTENANCE", "Under maintenance", "Temporarily unavailable: cannot be assigned or checked into."],
   ["INACTIVE", "Inactive (out of service)", "Removed from inventory and availability."],
 ];
+
+/** The choice that describes a room's current state (used to detect a real change). */
+const currentChoice = (room) => {
+  if (!room.id) return "AVAILABLE";
+  if (room.isActive === false) return "INACTIVE";
+  if (room.status === "MAINTENANCE") return "MAINTENANCE";
+  if (room.status === "DIRTY" || room.status === "CLEANING") return "DIRTY";
+  return "AVAILABLE";
+};
 
 const statusField = (room) => {
   if (room.status === "OCCUPIED") {
     return html`<div class="field"><label>Status</label><select disabled><option>Occupied</option></select>
       <div class="hint">Occupied by an in-house guest. The status changes automatically at checkout or room move.</div></div>`;
   }
-  const current = room.id ? (room.isActive === false ? "INACTIVE" : room.status === "MAINTENANCE" ? "MAINTENANCE" : "AVAILABLE") : "AVAILABLE";
+  const current = currentChoice(room);
   return html`<div class="field"><label>Status</label><select name="statusChoice">
     ${STATUS_CHOICES.map(([value, text]) => html`<option value="${value}" ${value === current ? raw("selected") : ""}>${text}</option>`)}
     </select><div class="hint" data-status-hint></div></div>`;
@@ -100,9 +110,11 @@ function toPayload(v, room = {}) {
     description: v.description ?? "",
     amenities: v.amenities ?? "",
   };
-  if (room.status !== "OCCUPIED" && v.statusChoice) {
+  // Only send a status when the administrator actually changed it, so editing
+  // e.g. the rate never interferes with the room's lifecycle.
+  if (room.status !== "OCCUPIED" && v.statusChoice && v.statusChoice !== currentChoice(room)) {
     if (v.statusChoice === "INACTIVE") payload.isActive = false;
-    else Object.assign(payload, { isActive: true, status: v.statusChoice === "MAINTENANCE" ? "MAINTENANCE" : "VACANT" });
+    else Object.assign(payload, { isActive: true, status: v.statusChoice });
   }
   return payload;
 }

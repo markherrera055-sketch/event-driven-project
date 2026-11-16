@@ -4,7 +4,7 @@
  */
 import "../core/shell.js";
 import { api } from "../core/api.js";
-import { $, html, raw, setHTML, date, dateTime, badge, money, label, errorHTML, emptyHTML, openModal, confirmDialog, withBusy, toast, toastError, session } from "../core/ui.js";
+import { $, html, raw, setHTML, date, dateTime, badge, money, label, errorHTML, emptyHTML, openModal, confirmDialog, withBusy, toast, toastError, session, isRoomReady, roomStatusBadge } from "../core/ui.js";
 import { lifecycleStepper } from "../core/lifecycle.js";
 import { changeRoom } from "../core/roomPicker.js";
 
@@ -29,11 +29,11 @@ function nextStep() {
   if (!session.isReceptionist) return html`<div class="alert alert-info">Front-desk actions are performed by receptionists.</div>`;
 
   const today = new Date().toLocaleDateString("en-CA");
-  const roomReady = r.room && !r.room.needsCleaning && r.room.status === "VACANT";
+  const roomReady = r.room && isRoomReady(r.room);
   const checks = [
     [!!r.room, r.room ? `Room ${r.room.roomNumber} assigned` : "Assign a room"],
     ...(r.room?.status === "MAINTENANCE" ? [[false, `Room ${r.room.roomNumber} is under maintenance — change the room`]] : []),
-    [!r.room || !r.room.needsCleaning, r.room?.needsCleaning ? `Room ${r.room.roomNumber} needs cleaning` : "Room is clean"],
+    [!r.room || !r.room.needsCleaning, r.room?.needsCleaning ? `Room ${r.room.roomNumber} is ${r.room.status === "CLEANING" ? "being cleaned" : "waiting for housekeeping"}` : "Room is clean"],
     [!r.room || r.room.status !== "OCCUPIED", r.room?.status === "OCCUPIED" ? `Room ${r.room.roomNumber} is still occupied` : "Room is vacant"],
     [r.identityVerified, r.identityVerified ? "Identity verified" : "Verify the guest's identity"],
     [r.checkInDate <= today, r.checkInDate <= today ? "Arrival date reached" : `Arrival on ${date(r.checkInDate)}`],
@@ -94,12 +94,12 @@ function render() {
             <dt>Email</dt><dd>${r.guest.email || "—"}</dd>
             <dt>Phone</dt><dd>${r.guest.phone || "—"}</dd>
           </dl></div></div>
-        <div class="card"><div class="card-head"><h2>Room</h2>${r.room ? badge(r.room.status) : ""}</div>
+        <div class="card"><div class="card-head"><h2>Room</h2>${r.room ? roomStatusBadge(r.room) : ""}</div>
           <div class="card-body">${
             r.room
               ? html`<dl class="dl"><dt>Room</dt><dd>${r.room.roomNumber}</dd><dt>Type</dt><dd>${r.room.roomType}</dd>
                   <dt>Capacity</dt><dd>${r.room.capacity}</dd><dt>Rate</dt><dd>${money(r.room.nightlyRate)} / night</dd>
-                  <dt>Housekeeping</dt><dd>${r.room.needsCleaning ? html`<span class="badge badge-amber">Needs cleaning</span>` : html`<span class="badge badge-green">Clean</span>`}</dd></dl>`
+                  <dt>Housekeeping</dt><dd>${r.room.needsCleaning ? html`<span class="badge badge-amber">${r.room.status === "CLEANING" ? "Cleaning in progress" : "Needs cleaning"}</span>` : html`<span class="badge badge-green">Clean</span>`}</dd></dl>`
               : html`<p class="muted">No room assigned yet.</p>`
           }</div></div>
       </div>
