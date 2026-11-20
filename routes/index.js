@@ -63,6 +63,7 @@ router.get("/front-desk/in-house", anyStaff, pages.inHousePage);
 router.get("/front-desk/stays/:id", anyStaff, pages.stayPage);
 router.get("/front-desk/receipts/:id", anyStaff, pages.receiptPage);
 router.get("/front-desk/restaurant-charges", anyStaff, pages.restaurantChargesPage);
+router.get("/front-desk/online-reservations", anyStaff, pages.onlineReservationsPage);
 router.get("/guests", anyStaff, pages.guestsPage);
 router.get("/guests/:id", anyStaff, pages.guestPage);
 router.get("/rooms", anyStaff, pages.roomsPage);

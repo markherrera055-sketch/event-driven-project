@@ -11,6 +11,9 @@
     <a href="/front-desk/reservations" class="{{#if (eq nav "reservations")}}active{{/if}}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
       Reservations</a>
+    <a href="/front-desk/online-reservations" class="{{#if (eq nav "online-reservations")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+      Online reservations<span class="nav-count hidden" data-online-count aria-label="unread online reservation notifications"></span></a>
     <a href="/front-desk/in-house" class="{{#if (eq nav "in-house")}}active{{/if}}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21V8l9-5 9 5v13"/><path d="M9 21v-7h6v7"/></svg>
       In-house &amp; billing</a>

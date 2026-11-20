@@ -49,6 +49,7 @@ export const inHousePage = page("frontdesk/in-house", "In-house guests", "in-hou
 export const stayPage = page("frontdesk/stay", "Guest folio", "in-house", withId);
 export const receiptPage = page("frontdesk/receipt", "Receipt", "in-house", withId);
 export const restaurantChargesPage = page("frontdesk/restaurant-charges", "Restaurant charges", "restaurant-charges", none);
+export const onlineReservationsPage = page("frontdesk/online-reservations", "Online reservations", "online-reservations", none);
 export const guestsPage = page("guests", "Guests", "guests", none);
 export const guestPage = page("guest", "Guest profile", "guests", withId);
 export const roomsPage = page("rooms", "Room status", "rooms", none);

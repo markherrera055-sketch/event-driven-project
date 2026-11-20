@@ -16,6 +16,10 @@
  *    not yet assigned to a room). Maintenance has no planned end date, so a
  *    room under maintenance is unsellable for tonight but still counts for
  *    future nights.
+ *  - Online (StayBook) bookings are ordinary CONFIRMED reservations of a
+ *    specific room, so every rule above protects them exactly like a desk
+ *    booking — for their dates only. A clash with one is reported with the
+ *    booking reference and dates (roomTakenError) so staff see why.
  * All rooms of the type are locked (SELECT ... FOR UPDATE) for the duration of
  * the caller's transaction, so concurrent bookings / assignments are serialised
  * and every check is re-done against committed data right before saving.
@@ -94,6 +98,36 @@ const inHouseOccupant = (roomId, excludeReservationId, transaction) =>
     transaction,
   });
 
+/** Labels of the external systems whose bookings hold a specific room. */
+const ONLINE_SOURCES = { STAYBOOK: "StayBook" };
+
+/**
+ * 409 ROOM_UNAVAILABLE for a room already held on some of the nights. When the
+ * holder is an online booking the message says so (reference, code, dates) and
+ * details.protected_by carries the same ids — no guest data.
+ */
+const roomTakenError = (room, clash) => {
+  const online = clash.externalBooking;
+  if (!online) {
+    return conflict("ROOM_UNAVAILABLE", `Room ${room.roomNumber} is already booked for part of these dates (${clash.reservationCode}).`);
+  }
+  const system = ONLINE_SOURCES[online.sourceSystem] || online.sourceSystem;
+  return conflict(
+    "ROOM_UNAVAILABLE",
+    `Room ${room.roomNumber} is reserved for an online ${system} guest (${online.bookingReference}, ${clash.reservationCode}) from ${clash.checkInDate} to ${clash.checkOutDate}. It cannot be given to another guest for overlapping dates.`,
+    {
+      protected_by: {
+        source_system: online.sourceSystem,
+        booking_reference: online.bookingReference,
+        reservation_code: clash.reservationCode,
+        room_number: room.roomNumber,
+        check_in: clash.checkInDate,
+        check_out: clash.checkOutDate,
+      },
+    }
+  );
+};
+
 /**
  * Locks every room of the given types (SELECT ... FOR UPDATE), always in the
  * same order — type name, then id — so concurrent bookings, room moves and
@@ -166,11 +200,10 @@ export async function assertBookable(
     }
     const clash = await Reservation.findOne({
       where: { ...overlapWhere({ checkInDate, checkOutDate, excludeReservationId }), roomId: room.id },
+      include: [{ association: "externalBooking", attributes: ["sourceSystem", "bookingReference"], required: false }],
       transaction,
     });
-    if (clash) {
-      throw conflict("ROOM_UNAVAILABLE", `Room ${room.roomNumber} is already booked for part of these dates (${clash.reservationCode}).`);
-    }
+    if (clash) throw roomTakenError(room, clash);
   }
 
   const from = fromDate && fromDate > checkInDate ? fromDate : checkInDate;

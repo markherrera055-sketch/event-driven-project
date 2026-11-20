@@ -8,9 +8,13 @@
  * maintenance, physical occupancy, type capacity). Before saving, the list is
  * re-fetched to confirm the room is still free, and the server re-checks
  * everything again under row locks when the change is committed.
+ *
+ * Rooms held by an online (StayBook) booking on any of these nights are shown
+ * greyed out with the booking reference and dates, so staff can see why a
+ * room is not offered; they cannot be selected.
  */
 import { api, ApiError } from "./api.js";
-import { html, setHTML, money, date, openModal, roomStatusBadge } from "./ui.js";
+import { html, setHTML, money, date, shortDate, openModal, roomStatusBadge } from "./ui.js";
 
 const nightsText = (n) => `${n} night${n === 1 ? "" : "s"}`;
 
@@ -29,10 +33,33 @@ function optionRow(room, current, reservation, inHouse) {
   </label>`;
 }
 
-const listHTML = (rooms, current, reservation, inHouse) =>
-  rooms.length
-    ? html`${rooms.map((room) => optionRow(room, current, reservation, inHouse))}<p class="muted small no-match hidden">No room matches the search.</p>`
-    : html`<div class="empty"><strong>No eligible rooms</strong>${inHouse ? "No other room is vacant, clean and free for the rest of this stay." : "No other room is free for these dates."} Try “Show other room types”.</div>`;
+/** A room held by an online booking on some of these nights: shown, never selectable. */
+const protectedRow = (hold) => html`<div class="room-option protected" aria-disabled="true" data-search="${[hold.roomNumber, hold.roomType, hold.bookingReference].join(" ").toLowerCase()}">
+    <span class="ro-lock" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg></span>
+    <span class="ro-main"><strong>Room ${hold.roomNumber}</strong>
+      <span class="sub">${hold.roomType} · reserved online for ${hold.guestName}</span></span>
+    <span class="ro-status"><span class="badge badge-amber">Online booking ${hold.bookingReference}</span></span>
+    <span class="ro-rate sub">${shortDate(hold.checkInDate)} → ${shortDate(hold.checkOutDate)}</span>
+    <span class="ro-avail"><span class="badge badge-red plain">Not available</span></span>
+  </div>`;
+
+/** Online holds on rooms that are not offered (one row per room: the first overlapping booking). */
+const protectedRooms = (holds, rooms, current, roomType, allTypes) => {
+  const offered = new Set(rooms.map((r) => r.id));
+  const seen = new Set();
+  return holds.filter((h) => {
+    if (offered.has(h.roomId) || seen.has(h.roomId) || h.roomId === current?.id || (!allTypes && h.roomType !== roomType)) return false;
+    seen.add(h.roomId);
+    return true;
+  });
+};
+
+const listHTML = (rooms, current, reservation, inHouse, held = []) =>
+  html`${rooms.length
+    ? html`${rooms.map((room) => optionRow(room, current, reservation, inHouse))}`
+    : html`<div class="empty"><strong>No eligible rooms</strong>${inHouse ? "No other room is vacant, clean and free for the rest of this stay." : "No other room is free for these dates."} Try “Show other room types”.</div>`}
+    ${held.length ? html`<p class="small muted held-note">Reserved by online (StayBook) guests on some of these nights — cannot be assigned:</p>${held.map(protectedRow)}` : ""}
+    <p class="muted small no-match hidden">No room matches the search.</p>`;
 
 /**
  * changeRoom(reservation) → updated reservation, or null when cancelled.
@@ -43,7 +70,18 @@ export async function changeRoom(reservation) {
   const current = reservation.room;
   const load = (allTypes) => api.get(`/reservations/${reservation.id}/assignable-rooms`, { allTypes });
   let allTypes = false;
-  let rooms = await load(false);
+  // Same date range the server checks (an in-house move needs the rest of the stay, at least tonight).
+  const todayIso = new Date().toLocaleDateString("en-CA");
+  const range = inHouse
+    ? { checkIn: todayIso, checkOut: reservation.checkOutDate > todayIso ? reservation.checkOutDate : new Date(Date.now() + 86400000).toLocaleDateString("en-CA") }
+    : { checkIn: reservation.checkInDate, checkOut: reservation.checkOutDate };
+  const [first, holds] = await Promise.all([
+    load(false),
+    // The warning list is informative: if it cannot be loaded the picker still works.
+    api.get("/online-reservations/holds", { ...range, excludeReservationId: reservation.id }).catch(() => []),
+  ]);
+  let rooms = first;
+  const held = () => protectedRooms(holds, rooms, current, reservation.roomType, allTypes);
 
   const picked = await openModal({
     title: `${current ? "Change room" : "Assign a room"} · ${reservation.reservationCode}`,
@@ -58,7 +96,7 @@ export async function changeRoom(reservation) {
         <input type="search" id="room-search" placeholder="Search by number, type, floor or amenity…" aria-label="Search rooms" autocomplete="off">
         <label class="check"><input type="checkbox" id="all-types"> Show other room types</label>
       </div>
-      <div class="room-options" id="room-list" role="radiogroup" aria-label="Eligible rooms">${listHTML(rooms, current, reservation, inHouse)}</div>`,
+      <div class="room-options" id="room-list" role="radiogroup" aria-label="Eligible rooms">${listHTML(rooms, current, reservation, inHouse, held())}</div>`,
     onOpen: (form) => {
       const listEl = form.querySelector("#room-list");
       const search = form.querySelector("#room-search");
@@ -80,7 +118,7 @@ export async function changeRoom(reservation) {
         setHTML(listEl, html`<div class="loading"><span class="spinner"></span>Loading rooms…</div>`);
         try {
           rooms = await load(allTypes);
-          setHTML(listEl, listHTML(rooms, current, reservation, inHouse));
+          setHTML(listEl, listHTML(rooms, current, reservation, inHouse, held()));
           filter();
         } catch (err) {
           setHTML(listEl, html`<div class="alert alert-danger">${err.message}</div>`);

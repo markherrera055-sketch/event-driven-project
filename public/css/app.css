@@ -647,3 +647,40 @@ ul.notes li { margin-bottom: 6px; }
   .pick-option { grid-template-columns: auto minmax(0, 1fr); }
   .pick-option > :last-child { grid-column: 2; }
 }
+
+/* ── Online reservations (StayBook) and the notification dropdown ─────── */
+.notify-wrap { position: relative; }
+button.notify-bell { background: transparent; padding: 0; cursor: pointer; font: inherit; }
+.notify-bell[aria-expanded="true"] { background: var(--surface-sunken); color: var(--text); border-color: var(--border); }
+.notify-panel { position: absolute; right: 0; top: calc(100% + 8px); width: min(380px, calc(100vw - 32px)); max-height: min(70vh, 560px); overflow-y: auto; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 8px 24px rgba(35, 62, 53, 0.12); z-index: 40; }
+.np-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 14px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); }
+.np-list { list-style: none; margin: 0; padding: 0; }
+.np-item a { display: grid; grid-template-columns: 8px minmax(0, 1fr); gap: 10px; padding: 11px 14px; color: var(--text-2); border-bottom: 1px solid var(--border); }
+.np-item a:hover { background: var(--color-ivory-dim); text-decoration: none; }
+.np-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; }
+.np-item.unread .np-dot { background: var(--accent); }
+.np-item.unread.problem .np-dot { background: var(--danger); }
+.np-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.np-text strong { font-size: 13px; font-weight: 600; color: var(--text-2); }
+.np-item.unread strong { color: var(--text); font-weight: 700; }
+.np-item.problem strong { color: var(--danger); }
+.np-msg { font-size: 12.5px; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.np-time { font-size: 11.5px; color: var(--text-3); }
+.np-empty { padding: 18px 14px; margin: 0; color: var(--text-3); font-size: 13px; }
+.np-row { display: block; padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; font-weight: 600; }
+.np-foot { border-bottom: 0; }
+.filters { align-items: flex-end; }
+.filters .field { margin-bottom: 0; flex: 1 1 140px; min-width: 0; }
+.filters .field input, .filters .field select { width: 100%; max-width: none; min-width: 0; }
+tr.row-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+.section-title { font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-2); margin: 18px 0 4px; }
+.timeline.history li { align-items: flex-start; gap: 14px; }
+.room-option.protected { cursor: not-allowed; background: var(--surface-2); border-style: dashed; }
+.room-option.protected:hover { background: var(--surface-2); border-color: var(--border); }
+.room-option .ro-lock { display: grid; place-items: center; width: 16px; color: var(--accent-text); }
+.room-option .ro-lock svg { width: 16px; height: 16px; }
+.held-note { margin: 8px 2px 0; }
+@media (max-width: 560px) {
+  .notify-panel { position: fixed; left: 16px; right: 16px; top: 62px; width: auto; }
+  .filters .field { flex-basis: 100%; }
+}

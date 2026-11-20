@@ -1,58 +1,90 @@
 /**
- * Restaurant-charge notifications for every staff page: the bell in the top
- * bar and the count next to "Restaurant charges" in the sidebar.
+ * Staff notifications on every page: the bell in the top bar (with a
+ * dropdown), the count next to "Online reservations" and "Restaurant charges"
+ * in the sidebar, and a toast when something new arrives.
  *
- * The application has no push channel, so this polls GET /pos-orders/summary
- * (counts only, no guest data) every 30 seconds while the tab is visible, and
- * immediately when it becomes visible again. A toast announces a purchase
- * that arrived since the last check. Pages can listen for the
- * "pos-orders:summary" event to refresh themselves.
+ * The application has no push channel, so this POLLS every 30 seconds while
+ * the tab is visible, and immediately when it becomes visible again:
+ *   GET /notifications/summary   StayBook online reservations + sync problems (per-user unread)
+ *   GET /pos-orders/summary      restaurant purchases awaiting review (counts only)
+ * A new notification can therefore take up to ~30 seconds to appear.
+ *
+ * Pages can listen for "notifications:summary" and "pos-orders:summary".
  */
 import { api } from "./api.js";
-import { toast } from "./ui.js";
+import { html, setHTML, dateTime, toast, toastError } from "./ui.js";
 
 const INTERVAL_MS = 30_000;
-const SEEN_KEY = "fd.posOrders.lastSeenId";
-const counters = [...document.querySelectorAll("[data-pos-count]")];
+const POS_SEEN_KEY = "fd.posOrders.lastSeenId";
+const NOTE_SEEN_KEY = "fd.notifications.lastSeenId";
+const posCounters = [...document.querySelectorAll("[data-pos-count]")];
+const onlineCounters = [...document.querySelectorAll("[data-online-count]")];
+const bellCount = document.querySelector("[data-notify-count]");
 const bell = document.getElementById("notify-bell");
+const panel = document.getElementById("notify-panel");
 
-// Per-tab memory of the newest purchase already announced (best effort: storage may be unavailable).
-const readSeen = () => {
+// Per-tab memory of what was already announced (best effort: storage may be unavailable).
+const readSeen = (key) => {
   try {
-    const v = Number(sessionStorage.getItem(SEEN_KEY));
+    const v = Number(sessionStorage.getItem(key));
     return Number.isFinite(v) && v > 0 ? v : null;
   } catch {
     return null;
   }
 };
-const writeSeen = (id) => {
+const writeSeen = (key, id) => {
   try {
-    sessionStorage.setItem(SEEN_KEY, String(id));
+    sessionStorage.setItem(key, String(id));
   } catch {
     /* ignore */
   }
 };
 
-let lastSeen = readSeen();
+let posSeen = readSeen(POS_SEEN_KEY);
+let noteSeen = readSeen(NOTE_SEEN_KEY);
+let pos = null;
+let notes = null;
 let timer = null;
 let inFlight = false;
 
-function render(s) {
-  const n = s.attention;
-  for (const el of counters) {
-    el.textContent = n > 99 ? "99+" : String(n);
-    el.classList.toggle("hidden", n === 0);
-    el.classList.toggle("danger", s.needsAdjustment > 0);
+/** Where a notification leads: the online reservation it is about, or the list of sync issues. */
+export const notificationHref = (n) =>
+  n.reservationId ? `/front-desk/online-reservations?open=${n.reservationId}` : "/front-desk/online-reservations?view=issues";
+
+const setCount = (el, n, danger) => {
+  el.textContent = n > 99 ? "99+" : String(n);
+  el.classList.toggle("hidden", n === 0);
+  el.classList.toggle("danger", !!danger);
+};
+
+function render() {
+  if (pos) for (const el of posCounters) setCount(el, pos.attention, pos.needsAdjustment > 0);
+  if (notes) for (const el of onlineCounters) setCount(el, notes.unread, notes.problems > 0);
+  if (!bell) return;
+  const unread = notes?.unread || 0;
+  const posAttention = pos?.attention || 0;
+  if (bellCount) setCount(bellCount, unread + posAttention, (notes?.problems || 0) > 0 || (pos?.needsAdjustment || 0) > 0);
+  const parts = [];
+  if (unread) parts.push(`${unread} unread notification${unread === 1 ? "" : "s"}${notes.problems ? ` (${notes.problems} need attention)` : ""}`);
+  if (posAttention) parts.push(`${posAttention} restaurant purchase${posAttention === 1 ? "" : "s"} need attention`);
+  const text = parts.length ? `Notifications: ${parts.join(", ")}` : "Notifications: nothing new";
+  bell.title = text;
+  bell.setAttribute("aria-label", text);
+  bell.classList.toggle("has-items", unread + posAttention > 0);
+}
+
+function announce() {
+  if (pos?.latestOpenId) {
+    if (posSeen !== null && pos.latestOpenId > posSeen) {
+      toast(pos.open === 1 ? "A new restaurant purchase is waiting for review." : `${pos.open} restaurant purchases are waiting for review.`, "info", 6000);
+    }
+    if (posSeen === null || pos.latestOpenId > posSeen) writeSeen(POS_SEEN_KEY, (posSeen = pos.latestOpenId));
   }
-  if (bell) {
-    const parts = [];
-    if (s.pendingReview) parts.push(`${s.pendingReview} awaiting review`);
-    if (s.needsVerification) parts.push(`${s.needsVerification} need guest verification`);
-    if (s.needsAdjustment) parts.push(`${s.needsAdjustment} voided after billing`);
-    const text = parts.length ? `Restaurant purchases: ${parts.join(", ")}` : "No restaurant purchases need attention";
-    bell.title = text;
-    bell.setAttribute("aria-label", text);
-    bell.classList.toggle("has-items", n > 0);
+  const latest = notes?.latestUnread;
+  if (latest) {
+    // Only announce what arrived after this tab started watching (no toast storm on first load).
+    if (noteSeen !== null && latest.id > noteSeen) toast(`${latest.title}. ${latest.message}`, latest.problem ? "warning" : "info", 9000);
+    if (noteSeen === null || latest.id > noteSeen) writeSeen(NOTE_SEEN_KEY, (noteSeen = latest.id));
   }
 }
 
@@ -60,23 +92,95 @@ export async function refreshNotifications() {
   if (inFlight) return;
   inFlight = true;
   try {
-    const s = await api.get("/pos-orders/summary");
-    render(s);
-    if (s.latestOpenId) {
-      if (lastSeen !== null && s.latestOpenId > lastSeen) {
-        toast(s.open === 1 ? "A new restaurant purchase is waiting for review." : `${s.open} restaurant purchases are waiting for review.`, "info", 6000);
-      }
-      if (lastSeen === null || s.latestOpenId > lastSeen) {
-        lastSeen = s.latestOpenId;
-        writeSeen(lastSeen);
-      }
-    }
-    document.dispatchEvent(new CustomEvent("pos-orders:summary", { detail: s }));
-  } catch {
-    /* Network hiccup: keep the last counts; the next poll retries. */
+    const [p, n] = await Promise.allSettled([api.get("/pos-orders/summary"), api.get("/notifications/summary")]);
+    // A network hiccup keeps the last counts; the next poll retries.
+    if (p.status === "fulfilled") pos = p.value;
+    if (n.status === "fulfilled") notes = n.value;
+    render();
+    announce();
+    if (p.status === "fulfilled") document.dispatchEvent(new CustomEvent("pos-orders:summary", { detail: pos }));
+    if (n.status === "fulfilled") document.dispatchEvent(new CustomEvent("notifications:summary", { detail: notes }));
+    if (panel && !panel.classList.contains("hidden") && n.status === "fulfilled") loadPanel();
   } finally {
     inFlight = false;
   }
+}
+
+// ── Dropdown ────────────────────────────────────────────────────────────────
+
+let shown = [];
+
+const itemHTML = (n) => html`<li class="np-item ${n.read ? "" : "unread"} ${n.problem ? "problem" : ""}">
+  <a href="${notificationHref(n)}" data-np-open="${n.id}">
+    <span class="np-dot" aria-hidden="true"></span>
+    <span class="np-text"><strong>${n.title}</strong><span class="np-msg">${n.message}</span><span class="np-time">${dateTime(n.createdAt)}${n.read ? "" : html` · <span class="sr-only">unread</span>New`}</span></span>
+  </a></li>`;
+
+async function loadPanel() {
+  try {
+    const { data } = await api.list("/notifications", { limit: 8 });
+    shown = data;
+    const posAttention = pos?.attention || 0;
+    setHTML(
+      panel,
+      html`<div class="np-head"><strong>Notifications</strong>
+          ${notes?.unread ? html`<button type="button" class="btn btn-sm btn-ghost" data-np-readall>Mark all read</button>` : ""}</div>
+        ${data.length ? html`<ul class="np-list">${data.map(itemHTML)}</ul>` : html`<p class="np-empty">No online reservation notifications yet.</p>`}
+        ${posAttention ? html`<a class="np-row" href="/front-desk/restaurant-charges">${posAttention} restaurant purchase${posAttention === 1 ? "" : "s"} need attention →</a>` : ""}
+        <a class="np-row np-foot" href="/front-desk/online-reservations">All online reservations →</a>`
+    );
+  } catch (err) {
+    setHTML(panel, html`<p class="np-empty">${err.message}</p>`);
+  }
+}
+
+function openPanel() {
+  panel.classList.remove("hidden");
+  bell.setAttribute("aria-expanded", "true");
+  setHTML(panel, html`<p class="np-empty">Loading…</p>`);
+  loadPanel();
+}
+function closePanel() {
+  panel.classList.add("hidden");
+  bell.setAttribute("aria-expanded", "false");
+}
+
+if (bell && panel) {
+  bell.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (panel.classList.contains("hidden")) openPanel();
+    else closePanel();
+  });
+  document.addEventListener("click", (e) => {
+    if (!panel.classList.contains("hidden") && !panel.contains(e.target) && !bell.contains(e.target)) closePanel();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !panel.classList.contains("hidden")) {
+      closePanel();
+      bell.focus();
+    }
+  });
+  panel.addEventListener("click", async (e) => {
+    const readAll = e.target.closest("[data-np-readall]");
+    if (readAll) {
+      try {
+        const upToId = Math.max(0, ...shown.map((n) => n.id), notes?.latestUnread?.id || 0);
+        await api.post("/notifications/read-all", upToId ? { upToId } : {});
+        await refreshNotifications();
+        loadPanel();
+      } catch (err) {
+        toastError(err);
+      }
+      return;
+    }
+    const link = e.target.closest("[data-np-open]");
+    if (link) {
+      e.preventDefault();
+      // Opening a notification marks it read, then goes to the reservation it is about.
+      await api.post(`/notifications/${link.dataset.npOpen}/read`).catch(() => {});
+      window.location.href = link.getAttribute("href");
+    }
+  });
 }
 
 function schedule() {
@@ -85,7 +189,7 @@ function schedule() {
 }
 
 // Accounts that must still replace a temporary password cannot use the API yet.
-if (counters.length && document.body.dataset.passwordChange !== "required") {
+if ((bell || posCounters.length || onlineCounters.length) && document.body.dataset.passwordChange !== "required") {
   refreshNotifications();
   schedule();
   document.addEventListener("visibilitychange", () => {

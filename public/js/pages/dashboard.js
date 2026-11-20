@@ -1,6 +1,6 @@
 import "../core/shell.js";
 import { api } from "../core/api.js";
-import { $, html, setHTML, money, dateTime, badge, errorHTML, emptyHTML, session } from "../core/ui.js";
+import { $, html, setHTML, money, dateTime, shortDate, badge, errorHTML, emptyHTML, session } from "../core/ui.js";
 
 const root = $("#page-root");
 
@@ -11,9 +11,26 @@ const stat = (label, value, sub, accent, href) => html`
     ${sub ? html`<div class="stat-sub">${sub}</div>` : ""}
   </${href ? "a" : "div"}>`;
 
+/** StayBook online reservations: rooms held for arriving online guests, and sync problems. */
+const onlineCard = (o) => html`<div class="card">
+  <div class="card-head"><h2>Online reservations</h2><a href="/front-desk/online-reservations" class="small">Open →</a></div>
+  ${o.problemsLast7Days ? html`<div class="card-body"><div class="alert alert-warning"><a href="/front-desk/online-reservations?view=issues">${o.problemsLast7Days} StayBook sync issue${o.problemsLast7Days === 1 ? "" : "s"} in the last 7 days →</a></div></div>` : ""}
+  <div class="card-body"><dl class="dl small">
+    <dt>Arriving today</dt><dd>${o.arrivalsToday}</dd>
+    <dt>Upcoming</dt><dd>${o.upcoming}</dd>
+    <dt>Received today</dt><dd>${o.receivedToday}</dd>
+  </dl></div>
+  ${o.nextArrivals.length
+    ? html`<ul class="notice-list">${o.nextArrivals.map(
+        (r) => html`<li><span class="dot"></span><span><a href="/front-desk/online-reservations?open=${r.id}">${shortDate(r.checkInDate)} · ${r.guestName}</a>
+          <span class="muted small">· ${r.room ? `Room ${r.room.roomNumber}` : "no room"} · ${r.bookingReference}</span></span></li>`
+      )}</ul>`
+    : html`<div class="card-body muted small">No online arrivals in the next 7 days.</div>`}
+</div>`;
+
 async function load() {
   try {
-    const d = await api.get("/dashboard");
+    const [d, online] = await Promise.all([api.get("/dashboard"), api.get("/online-reservations/summary").catch(() => null)]);
     const notices = d.notifications.filter((n) => !n.adminOnly || session.isAdmin);
     setHTML(
       root,
@@ -50,6 +67,7 @@ async function load() {
         </div>
 
         <div class="stack">
+          ${online ? onlineCard(online) : ""}
           <div class="card">
             <div class="card-head"><h2>Notifications</h2></div>
             ${

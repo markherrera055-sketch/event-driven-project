@@ -1,0 +1,7 @@
+{{> layoutStart}}
+<div class="page-head">
+  <div><h1>Online reservations</h1><p>Bookings received from StayBook. Each room is held for its booked dates only. Updates are checked every 30 seconds.</p></div>
+  <div class="page-actions" id="page-actions"></div>
+</div>
+<div id="page-root"><div class="loading"><span class="spinner"></span>Loading…</div></div>
+{{> layoutEnd}}

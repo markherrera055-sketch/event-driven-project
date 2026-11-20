@@ -26,6 +26,7 @@ import { Session } from "./Session.js";
 import { ExternalRoomMapping, EXTERNAL_SYSTEMS } from "./ExternalRoomMapping.js";
 import { ExternalBooking, EXTERNAL_SYNC_STATUS } from "./ExternalBooking.js";
 import { PosOrder, POS_ORDER_STATUS, OPEN_POS_ORDER_STATUSES } from "./PosOrder.js";
+import { StaffNotification, StaffNotificationRead, NOTIFICATION_CATEGORY, PROBLEM_NOTIFICATION_CATEGORIES } from "./StaffNotification.js";
 
 const restrict = { onDelete: "RESTRICT", onUpdate: "CASCADE" };
 
@@ -116,6 +117,13 @@ PosOrder.belongsTo(StayCharge, { foreignKey: "stayChargeId", as: "charge", ...re
 StayCharge.hasOne(PosOrder, { foreignKey: "stayChargeId", as: "posOrder", ...restrict });
 PosOrder.belongsTo(User, { foreignKey: "reviewedBy", as: "reviewer", ...restrict });
 PosOrder.belongsTo(User, { foreignKey: "adjustmentResolvedBy", as: "adjustmentResolver", ...restrict });
+
+// Staff notifications (online reservations, sync problems) and per-user read state.
+StaffNotification.belongsTo(Reservation, { foreignKey: "reservationId", as: "reservation", ...restrict });
+StaffNotification.belongsTo(ExternalBooking, { foreignKey: "externalBookingId", as: "externalBooking", ...restrict });
+StaffNotification.hasMany(StaffNotificationRead, { foreignKey: "notificationId", as: "reads", ...restrict });
+StaffNotificationRead.belongsTo(StaffNotification, { foreignKey: "notificationId", as: "notification", ...restrict });
+StaffNotificationRead.belongsTo(User, { foreignKey: "userId", as: "user", ...restrict });
 
 // Payment 1 — 0..1 Receipt  ("issues")
 Payment.hasOne(Receipt, { foreignKey: "paymentId", as: "receipt", ...restrict });
@@ -306,4 +314,8 @@ export {
   PosOrder,
   POS_ORDER_STATUS,
   OPEN_POS_ORDER_STATUSES,
+  StaffNotification,
+  StaffNotificationRead,
+  NOTIFICATION_CATEGORY,
+  PROBLEM_NOTIFICATION_CATEGORIES,
 };

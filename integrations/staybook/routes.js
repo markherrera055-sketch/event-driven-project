@@ -13,9 +13,14 @@
  *   PATCH /reservations/{id}                                       later revision (dates, guests, room, quote, status)
  *   POST  /reservations/{id}/cancel                                cancellation
  * {id} = Frontdesk reservation id (digits) or the StayBook booking reference (e.g. SB-EXAMPLE12345).
+ *
+ * A refused write (4xx: unmapped room, room already taken, invalid data, …)
+ * is also reported to front-desk staff as a notification (staybookService
+ * recordSyncFailure); the answer StayBook receives is unchanged.
  */
 import express from "express";
 import { asyncHandler, ok, created, fail } from "../../utils/http.js";
+import { validationError } from "../../utils/errors.js";
 import { validate, v } from "../../utils/validate.js";
 import { requireScope } from "../shared/auth.js";
 import { SCOPES } from "../shared/clients.js";
@@ -53,6 +58,17 @@ const stayFields = (required) => ({
   updated_at: v.datetime({ required: true }),
 });
 
+/** Write handler whose refusals are reported to the front desk (Room Conflict Warning / Synchronization Failed). */
+const reported = (operation, handler) =>
+  asyncHandler(async (req, res) => {
+    try {
+      await handler(req, res);
+    } catch (err) {
+      await staybook.recordSyncFailure({ operation, id: req.params.id, body: req.body, err, idempotencyKey: req.get("idempotency-key") });
+      throw err;
+    }
+  });
+
 router.param("id", (req, res, next, id) =>
   /^[A-Za-z0-9._:-]{1,100}$/.test(id) ? next() : fail(res, 404, "RESERVATION_NOT_FOUND", "Unknown reservation id or booking reference.")
 );
@@ -74,7 +90,7 @@ router.get(
 router.post(
   "/reservations",
   write,
-  asyncHandler(async (req, res) => {
+  reported("create", async (req, res) => {
     const input = validate(req.body, {
       source_system: v.enum(["STAYBOOK"], { required: true }),
       source_booking_id: v.string({ required: true, ...ID }),
@@ -94,13 +110,13 @@ router.get("/reservations/:id", read, asyncHandler(async (req, res) => ok(res, a
 router.patch(
   "/reservations/:id",
   write,
-  asyncHandler(async (req, res) => {
+  reported("update", async (req, res) => {
     const input = validate(
       req.body,
       { guest: v.object(guestSchema(false)), ...stayFields(false), booking_status: v.enum(staybook.ACTIVE_STAYBOOK_STATUSES) },
       { partial: true }
     );
-    if (input.updated_at === undefined) return fail(res, 422, "VALIDATION_ERROR", "Some fields are invalid.", { updated_at: "This field is required." });
+    if (input.updated_at === undefined) throw validationError({ updated_at: "This field is required." });
     ok(res, await staybook.updateFromStaybook(req.params.id, input));
   })
 );
@@ -108,7 +124,7 @@ router.patch(
 router.post(
   "/reservations/:id/cancel",
   write,
-  asyncHandler(async (req, res) => {
+  reported("cancel", async (req, res) => {
     const input = validate(req.body, { reason: v.string({ max: 255 }), updated_at: v.datetime() });
     ok(res, await staybook.cancelFromStaybook(req.params.id, input));
   })

@@ -81,6 +81,10 @@ const BADGE = {
   AVAILABLE: "green", RESERVED: "blue", MAINTENANCE: "red", INACTIVE: "plain", DELETED: "plain",
   // Restaurant POS purchases
   PENDING_REVIEW: "amber", NEEDS_GUEST_VERIFICATION: "red", ADDED_TO_FOLIO: "green", REJECTED: "plain", ALREADY_PAID: "sky",
+  // StayBook online reservations and notifications
+  ONLINE_RESERVATION_NEW: "green", ONLINE_RESERVATION_UPDATED: "blue", ONLINE_RESERVATION_CANCELLED: "plain",
+  ROOM_CONFLICT: "red", SYNC_FAILED: "red", ACKNOWLEDGED: "green", UPDATED: "blue",
+  WEBHOOK_FAILED: "red", WEBHOOK_PENDING: "amber", LOCAL_CONFIRMED: "amber", ADMIN_CONFIRMED: "green", ONLINE_HOLD: "amber",
 };
 export const badge = (status, text) => {
   const tone = BADGE[status] || "plain";

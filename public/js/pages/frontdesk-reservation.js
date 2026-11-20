@@ -7,10 +7,13 @@ import { api } from "../core/api.js";
 import { $, html, raw, setHTML, date, dateTime, badge, money, label, errorHTML, emptyHTML, openModal, confirmDialog, withBusy, toast, toastError, session, isRoomReady, roomStatusBadge } from "../core/ui.js";
 import { lifecycleStepper } from "../core/lifecycle.js";
 import { changeRoom } from "../core/roomPicker.js";
+import { syncBadge } from "../core/online.js";
+import { refreshNotifications } from "../core/notifications.js";
 
 const root = $("#page-root");
 const id = session.entityId;
 let r;
+let online = null; // StayBook booking details, when this reservation came from StayBook
 
 const ID_TYPES = [
   ["PASSPORT", "Passport"],
@@ -67,7 +70,7 @@ function render() {
             <dt>Dates</dt><dd>${date(r.checkInDate)} → ${date(r.checkOutDate)} (${r.nights} night${r.nights === 1 ? "" : "s"})</dd>
             <dt>Guests</dt><dd>${r.numGuests}</dd>
             <dt>Room type</dt><dd>${r.roomType}</dd>
-            <dt>Source</dt><dd>${r.source === "RESERVATION_SYSTEM" ? "Hotel Reservation System" : "Front desk"}</dd>
+            <dt>Source</dt><dd>${online ? "StayBook (online booking)" : r.source === "RESERVATION_SYSTEM" ? "Hotel Reservation System" : "Front desk"}</dd>
             ${r.externalReservationId ? html`<dt>External ID</dt><dd class="mono">${r.externalReservationId}</dd>` : ""}
             ${r.bookingReference ? html`<dt>Booking ref.</dt><dd class="mono">${r.bookingReference}</dd>` : ""}
             ${r.externalPaymentStatus ? html`<dt>Online payment</dt><dd>${label(r.externalPaymentStatus)}</dd>` : ""}
@@ -88,6 +91,7 @@ function render() {
           }</div></div>
       </div>
       <div class="stack">
+        ${online ? stayBookCard() : ""}
         <div class="card"><div class="card-head"><h2>Guest</h2><a class="small" href="/guests/${r.guest.id}">Profile →</a></div>
           <div class="card-body"><dl class="dl">
             <dt>Name</dt><dd>${r.guest.fullName}</dd>
@@ -107,9 +111,27 @@ function render() {
   );
 }
 
+/** StayBook booking: reference, quote, synchronisation and a link to its history. */
+const stayBookCard = () => html`<div class="card"><div class="card-head"><h2>StayBook online booking</h2>${badge(online.bookingStatus)}</div>
+  <div class="card-body"><dl class="dl">
+    <dt>StayBook ref.</dt><dd class="mono">${online.bookingReference}</dd>
+    <dt>Received</dt><dd>${dateTime(online.receivedAt)}</dd>
+    <dt>Quoted price</dt><dd>${money(online.quote.totalAmount)} <span class="muted small">(${money(online.quote.nightlyRate)}/night)</span></dd>
+    ${online.roomChangedByFrontDesk ? html`<dt>Booked room</dt><dd>${online.bookedRoomNumber} <span class="muted small">(moved by the front desk)</span></dd>` : ""}
+    <dt>Synchronisation</dt><dd>${syncBadge(online.sync)}</dd>
+  </dl>
+  ${r.status === "CONFIRMED" && r.room ? html`<p class="small muted">Room ${r.room.roomNumber} is held for this guest for ${date(r.checkInDate)} → ${date(r.checkOutDate)} only; other dates stay bookable.</p>` : ""}
+  <a class="small" href="/front-desk/online-reservations?open=${r.id}">History &amp; notifications →</a></div></div>`;
+
 async function load() {
   try {
     r = await api.get(`/reservations/${id}`);
+    online = null;
+    if (r.source === "RESERVATION_SYSTEM") {
+      // 404 = an online booking from the older type-based Booking API, not StayBook.
+      online = await api.get(`/online-reservations/${id}`).catch(() => null);
+      if (online?.unreadNotifications) api.post("/notifications/read-all", { reservationId: id }).then(() => refreshNotifications()).catch(() => {});
+    }
     render();
   } catch (err) {
     setHTML(root, errorHTML(err));

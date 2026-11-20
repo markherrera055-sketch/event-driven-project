@@ -20,7 +20,7 @@ This API is used by the Front Desk Web App and the Admin Console. External syste
 | 401 `UNAUTHORIZED` | Not signed in |
 | 403 `FORBIDDEN` / `CSRF_TOKEN_INVALID` | Wrong role / missing CSRF token |
 | 404 `NOT_FOUND` | Unknown id |
-| 409 | Business rule refused the action. `code` explains why: `ROOM_NOT_ASSIGNED`, `IDENTITY_NOT_VERIFIED`, `ROOM_NOT_READY`, `ROOM_OCCUPIED`, `NO_AVAILABILITY`, `ROOM_UNAVAILABLE`, `BILL_NOT_CONFIRMED`, `BILL_LOCKED`, `AMOUNT_MISMATCH`, `BILL_ALREADY_PAID`, `BILL_NOT_PAID`, … |
+| 409 | Business rule refused the action. `code` explains why: `ROOM_NOT_ASSIGNED`, `IDENTITY_NOT_VERIFIED`, `ROOM_NOT_READY`, `ROOM_OCCUPIED`, `NO_AVAILABILITY`, `ROOM_UNAVAILABLE` (when the room is held by a StayBook booking the message names it and `details.protected_by` gives its reference, code and dates), `BILL_NOT_CONFIRMED`, `BILL_LOCKED`, `AMOUNT_MISMATCH`, `BILL_ALREADY_PAID`, `BILL_NOT_PAID`, … |
 | 422 `VALIDATION_ERROR` | Field errors in `error.details` |
 | 500 | Unexpected; `error.details.reference` matches the server log line |
 
@@ -105,6 +105,21 @@ POST /api/v1/verifications
 | POST | `/pos-orders/{id}/reject` | R | `{ "reason": "…" }` → `REJECTED`; never billed; the POS is notified |
 | POST | `/pos-orders/{id}/resolve-void` | R | Marks a purchase voided by the POS after billing as handled (after the bill was corrected) |
 
+### Online reservations (StayBook) and staff notifications (see [STAYBOOK.md §11](STAYBOOK.md#11-online-reservations-page-notifications-and-room-protection))
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/online-reservations` | R/A | Paged list of bookings received from StayBook (newest first). Query: `guest` (name), `reference` (StayBook reference, StayBook booking id or `RSV-…` code), `room` (number), `checkIn`, `checkOut` (exact `YYYY-MM-DD`), `status` (`CONFIRMED`, `CHECKED_IN`, `CHECKED_OUT`, `CANCELLED`), `view` (`upcoming`, `arrivals`, `cancelled`), `page`, `limit`. Each row: `id` (Frontdesk reservation id), `reservationCode`, `bookingReference`, `guestName`, `room`, `roomType`, dates, `numGuests`, `status`, `bookingStatus`, `receivedAt`, `quote`, `sync { inbound, lastSyncedAt, outbound, health: OK\|WEBHOOK_PENDING\|WEBHOOK_FAILED }`, `unreadNotifications`. No guest contact data |
+| GET | `/online-reservations/summary` | R/A | Dashboard card: `{ arrivalsToday, upcoming, receivedToday, problemsLast7Days, nextArrivals[] }` |
+| GET | `/online-reservations/holds?checkIn&checkOut[&excludeReservationId]` | R/A | Rooms held by active StayBook bookings on any night of the range (same overlap rule as availability; a booking ending on `checkIn` does not count). Used by the room picker and the walk-in form to warn staff |
+| GET | `/online-reservations/{id}` | R/A | One row (by Frontdesk reservation id) + `history { events[], webhooks[], notifications[] }`. 404 for reservations that did not come from StayBook |
+| GET | `/notifications?unread=&problems=&category=&reservationId=` | R/A | Newest first, with `read` for the current user. `problems=true` = `ROOM_CONFLICT` + `SYNC_FAILED` |
+| GET | `/notifications/summary` | R/A | Polled every 30 s by every page: `{ unread, problems, byCategory, latestUnread }` (per user) |
+| POST | `/notifications/{id}/read` | R/A | Mark one read for the current user (idempotent) |
+| POST | `/notifications/read-all` | R/A | `{ upToId?, reservationId? }`: mark the user's notifications read, up to the newest one seen and/or for one reservation |
+
+Categories: `ONLINE_RESERVATION_NEW`, `ONLINE_RESERVATION_UPDATED`, `ONLINE_RESERVATION_CANCELLED`, `ROOM_CONFLICT`, `SYNC_FAILED`.
+
 ### Payments, receipts, checkout (8.0, 9.0)
 
 | Method | Path | Role | Description |
@@ -168,3 +183,4 @@ Room `status` follows the lifecycle `AVAILABLE`, `RESERVED`, `OCCUPIED`, `DIRTY`
 | GET | `/admin/staybook/room-mappings` | A | Every room with its StayBook room id (or `null`), plus mappings to deleted rooms |
 | PUT | `/admin/staybook/room-mappings/{staybookRoomId}` | A | Map a StayBook room to a Frontdesk room: `{ "roomId": 3, "replace": false }`. 409 `ROOM_ALREADY_MAPPED` if the room has another StayBook id (send `replace: true` to swap) |
 | DELETE | `/admin/staybook/room-mappings/{staybookRoomId}` | A | Remove a mapping (existing reservations are kept) |
+| GET | `/admin/staybook/sync-issues` | A | `{ refusedRequests[], refusedTotal, failedWebhooks[] }`: StayBook requests answered 4xx, and webhooks to StayBook that failed after every retry (re-send with `/admin/integrations/outbox/{id}/retry`) |

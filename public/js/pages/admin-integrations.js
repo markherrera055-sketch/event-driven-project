@@ -33,6 +33,27 @@ const staybookCard = (status, mapping) => html`<div class="card"><div class="car
       ${r.staybookRoomId ? html` <button class="btn btn-sm btn-secondary" data-unmap="${r.staybookRoomId}" data-room-number="${r.roomNumber}">Remove</button>` : ""}</td></tr>`)}
   </tbody></table></div></div></div>`;
 
+/** StayBook synchronisation problems: refused StayBook requests and webhooks to StayBook that failed for good. */
+const staybookIssuesCard = (issues) => html`<div class="card"><div class="card-head"><h2>StayBook sync issues</h2>
+  <span class="muted small"><a href="/front-desk/online-reservations">Online reservations →</a></span></div>
+  <div class="card-body"><p class="muted small">Front-desk staff are notified of each of these (Room conflict warning / Synchronization failed). Refused requests changed nothing in the Frontdesk; StayBook shows them as <code>REJECTED</code> and retries after the cause is fixed.</p></div>
+  <div class="card-body flush">${
+    issues.failedWebhooks.length
+      ? html`<div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Booking</th><th>Event</th><th>Attempts</th><th>Last error</th><th>Failed</th><th></th></tr></thead><tbody>
+        ${issues.failedWebhooks.map((w) => html`<tr><td>${w.id}</td><td class="mono"><a href="/front-desk/online-reservations?open=${w.reservationId}">${w.bookingReference}</a></td><td class="mono">${w.event}</td><td class="num">${w.attempts}</td>
+          <td class="small">${w.lastError || ""}</td><td class="nowrap">${dateTime(w.updatedAt)}</td><td class="right"><button class="btn btn-sm" data-retry="${w.id}">Re-send</button></td></tr>`)}
+        </tbody></table></div>`
+      : html`<div class="card-body muted small">No failed webhooks to StayBook.</div>`
+  }</div>
+  <div class="card-body flush">${
+    issues.refusedRequests.length
+      ? html`<div class="table-wrap"><table class="table"><thead><tr><th>When</th><th>Request</th><th>Status</th><th>Code</th><th>Message</th></tr></thead><tbody>
+        ${issues.refusedRequests.map((q) => html`<tr><td class="nowrap">${dateTime(q.createdAt)}</td><td class="mono small">${q.method} ${q.path.replace("/api/v1/integrations/staybook", "")}</td>
+          <td><span class="badge badge-red plain">${q.status}</span></td><td class="mono small">${q.code || ""}</td><td class="small">${q.message || ""}</td></tr>`)}
+        </tbody></table></div>${issues.refusedTotal > issues.refusedRequests.length ? html`<div class="pager"><span>Latest ${issues.refusedRequests.length} of ${issues.refusedTotal} refused requests</span></div>` : ""}`
+      : html`<div class="card-body muted small">No refused StayBook requests.</div>`
+  }</div></div>`;
+
 /** Restaurant POS purchase notifications (front-desk review queue). Configuration lives in .env. */
 const posOrdersCard = (p, sum) => html`<div class="card"><div class="card-head"><h2>Restaurant POS purchases <span class="muted small">· front-desk review</span></h2>${yesNo(p.enabled, "Enabled", "Disabled")}</div>
   <div class="card-body">
@@ -49,10 +70,11 @@ const posOrdersCard = (p, sum) => html`<div class="card"><div class="card-head">
 
 async function load() {
   try {
-    const [{ status, outbox, requests }, mapping, posSummary] = await Promise.all([
+    const [{ status, outbox, requests }, mapping, posSummary, staybookIssues] = await Promise.all([
       api.get("/admin/integrations"),
       api.get("/admin/staybook/room-mappings"),
       api.get("/pos-orders/summary").catch(() => null),
+      api.get("/admin/staybook/sync-issues").catch(() => null),
     ]);
     setHTML(
       root,
@@ -60,6 +82,7 @@ async function load() {
       <div class="grid grid-2">${status.clients.map((c) => clientCard(c, status))}</div>
       ${posOrdersCard(status.posOrders, posSummary)}
       ${staybookCard(status, mapping)}
+      ${staybookIssues ? staybookIssuesCard(staybookIssues) : ""}
       <div class="card"><div class="card-head"><h2>Outbound webhooks</h2><span class="muted small">latest 50</span></div><div class="card-body flush">${
         outbox.length
           ? html`<div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Event id</th><th>Target</th><th>Event</th><th>Status</th><th>Attempts</th><th>Last error</th><th>Created</th><th></th></tr></thead><tbody>

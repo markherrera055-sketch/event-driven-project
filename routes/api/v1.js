@@ -14,6 +14,7 @@ import * as property from "../../controllers/api/propertyController.js";
 import * as admin from "../../controllers/api/adminController.js";
 import * as account from "../../controllers/api/accountController.js";
 import * as posOrders from "../../controllers/api/posOrderController.js";
+import * as online from "../../controllers/api/onlineReservationController.js";
 import { Reservation } from "../../models/index.js";
 import { fail } from "../../utils/http.js";
 
@@ -83,6 +84,17 @@ router.post("/pos-orders/:id/approve", receptionistOnly, posOrders.approve);
 router.post("/pos-orders/:id/reject", receptionistOnly, posOrders.reject);
 router.post("/pos-orders/:id/resolve-void", receptionistOnly, posOrders.resolveVoid);
 
+// Online reservations received from StayBook, and staff notifications (bell). Every staff role:
+// receptionists assign rooms and must see online bookings; read state is per user.
+router.get("/online-reservations", anyStaff, online.list);
+router.get("/online-reservations/summary", anyStaff, online.summary);
+router.get("/online-reservations/holds", anyStaff, online.holds);
+router.get("/online-reservations/:id", anyStaff, online.show);
+router.get("/notifications", anyStaff, online.listNotifications);
+router.get("/notifications/summary", anyStaff, online.notificationSummary);
+router.post("/notifications/read-all", anyStaff, online.markAllRead);
+router.post("/notifications/:id/read", anyStaff, online.markRead);
+
 // Payment module (8.0, 9.0) and Receipt & Checkout module
 router.post("/payments", receptionistOnly, desk.pay);
 router.get("/receipts/:id", anyStaff, desk.showReceipt);
@@ -114,5 +126,6 @@ router.post("/admin/integrations/outbox/:id/retry", adminOnly, admin.retryOutbox
 router.get("/admin/staybook/room-mappings", adminOnly, admin.staybookRoomMappings);
 router.put("/admin/staybook/room-mappings/:staybookRoomId", adminOnly, admin.setStaybookRoomMapping);
 router.delete("/admin/staybook/room-mappings/:staybookRoomId", adminOnly, admin.deleteStaybookRoomMapping);
+router.get("/admin/staybook/sync-issues", adminOnly, admin.staybookSyncIssues);
 
 export default router;

@@ -302,6 +302,15 @@ Both tables are **new**. `npm run migrate` creates them (it only adds missing ta
 
 StayBook bookings are otherwise ordinary reservations (`source = RESERVATION_SYSTEM`), so every Frontdesk screen, report and workflow handles them unchanged.
 
+**Online Reservations notifications (§11)** add two more tables, also created by `npm run migrate` (additive only; no existing table or column is changed):
+
+| Table | Purpose | Keys |
+|---|---|---|
+| `staff_notifications` | One notification for all staff: `category`, `title`, `message`, `reservation_id` (nullable), `external_booking_id` (nullable), `booking_reference`, `room_number`, `guest_name`, `details` (JSON: codes, dates, changes; never contact data), `created_at` | unique `dedupe_key` (one notification per event however often StayBook delivers it); FK `reservation_id` → `reservations`, `external_booking_id` → `external_bookings` (RESTRICT) |
+| `staff_notification_reads` | Per-user read state (`notification_id`, `user_id`, `read_at`) | primary key (`notification_id`, `user_id`); FK → `staff_notifications`, `users` (RESTRICT) |
+
+Notifications are never deleted. **The development database is not migrated automatically**: run `npm run migrate` when you are ready (the test suites create the tables in `FrontDesk_test`).
+
 ---
 
 ## 8. Remaining requirements for the StayBook developer
@@ -349,3 +358,93 @@ StayBook bookings are otherwise ordinary reservations (`source = RESERVATION_SYS
 - StayBook's webhook endpoint down → retry
 - the reference client: Frontdesk unreachable, timeouts, lost answers, and reject → fix → retry
 - local Frontdesk reservations unaffected
+
+`__tests__/staybook.notifications.test.js` covers §11: the new-booking notification (guest, room, reference; no contact data); visibility for receptionists and administrators (401 anonymous, CSRF on writes); per-user unread counts, mark read and mark all read; the page's columns and every filter; reservation details and history; room protection (walk-in by room and by type refused for overlapping dates, adjacent stays allowed, room assignment refused, picker eligibility, holds endpoint); updated dates (old nights released, new nights protected, one notification per revision, stale revisions ignored, conflicting change refused); cancellation (room released, records kept, notified once, front-desk cancellations not announced); failed synchronisation (unmapped room, invalid data, unknown booking, webhook to StayBook failing on every attempt, admin view); duplicate deliveries (replay, new key, simultaneous); and unchanged front-desk workflows.
+
+---
+
+## 11. Online Reservations page, notifications and room protection
+
+### 11.1 What existed (audit) and what was added
+
+| Need | Before | Now |
+|---|---|---|
+| Receive / update / cancel StayBook bookings, no duplicates | Done (§2–§4) | **Unchanged.** Notifications are written inside the same functions and transactions |
+| A StayBook room held for its dates | Done: a StayBook booking is a normal `CONFIRMED` reservation of the mapped room, and `assertBookable` / `findAvailableRooms` (`services/availabilityService.js`) refuse any overlapping booking, assignment, walk-in or room move under row locks | **Rules unchanged.** The refusal now names the online booking (§11.3); the room picker and the walk-in form show online holds |
+| A list of online bookings for staff | Only an "Online" badge on Reservations | **Online reservations** page (`/front-desk/online-reservations`) |
+| Telling staff about new / changed / cancelled bookings and sync problems | Nothing (refusals only in the admin request log) | Staff notifications: bell + dropdown, sidebar count, toast, dashboard card, admin "StayBook sync issues" card |
+
+Nothing is copied: the page reads `external_bookings` joined with `reservations`, so there is still exactly one reservation per booking. Reservations from the older type-based Booking API (`/booking/reservations`) keep their "Online" badge on Reservations but are not listed on this page.
+
+### 11.2 Notifications
+
+| Category | When | Shown as |
+|---|---|---|
+| `ONLINE_RESERVATION_NEW` | StayBook booking accepted (POST `/reservations` → 201) | New online reservation |
+| `ONLINE_RESERVATION_UPDATED` | A newer StayBook revision applied (PATCH). Lists what changed | Online reservation updated |
+| `ONLINE_RESERVATION_CANCELLED` | Cancelled from StayBook (POST `…/cancel`) | Online reservation cancelled |
+| `ROOM_CONFLICT` | StayBook's create / change refused because the room is taken (`ROOM_UNAVAILABLE`, `NO_AVAILABILITY`, `ROOM_OCCUPIED`, `ROOM_UNDER_MAINTENANCE`). Includes the booking that holds the room | Room conflict warning (red) |
+| `SYNC_FAILED` | Any other refused StayBook write (`ROOM_NOT_MAPPED`, `HOTEL_NOT_MANAGED`, `VALIDATION_ERROR`, `RESERVATION_NOT_FOUND`, `RESERVATION_NOT_MODIFIABLE`, mapping problems), or a webhook to StayBook that failed after every retry | Synchronization failed (red) |
+
+Each notification carries the guest name, room number and booking reference (plus the Frontdesk reservation id when there is one), never email, phone or payment data.
+
+- **Exactly once.** Booking notifications are written in the booking's transaction with a unique key (`STAYBOOK:NEW:<booking>`, `…:UPDATED:<booking>:<revision>`, `…:CANCELLED:<booking>`). A replay with the same `Idempotency-Key` never reaches the code; the same booking under a new key is `DUPLICATE_RESERVATION`; the same revision again is a no-op. None of these notify twice. Refusals are keyed by the request's `Idempotency-Key`.
+- **Not notified:** `DUPLICATE_RESERVATION` (already synced), `STALE_UPDATE` (older revision), `REQUEST_IN_PROGRESS`, authentication failures (admin request log only), and changes made at the front desk itself.
+- **Who sees them:** every receptionist and administrator (room assignment is a receptionist task). Read state is **per staff member**: opening a notification, opening the reservation's details, viewing *Sync issues* or *Mark all read* clears it only for you.
+- **Delivery is by polling, not real-time.** The application has no push channel. Every staff page asks `GET /api/v1/notifications/summary` every **30 seconds** while the tab is visible (and immediately when it becomes visible again), so a new booking appears within about 30 seconds. A toast announces notifications that arrive while a page is open.
+
+### 11.3 Room protection
+
+A StayBook booking holds **its room for its nights only**: `[check_in, check_out)`.
+
+Example: Room 204 is booked online for 25 → 27 November (the nights of the 25th and 26th).
+
+| Attempt at the front desk | Result |
+|---|---|
+| Walk-in in room 204, 26 → 28 Nov | **Refused** 409 `ROOM_UNAVAILABLE`: "Room 204 is reserved for an online StayBook guest (SB-…, RSV-0012) from 2026-11-25 to 2026-11-27. It cannot be given to another guest for overlapping dates." |
+| Assign room 204 to another arriving guest for 24 → 26 Nov | **Refused**, same message. The room picker shows 204 greyed out as "Online booking SB-…" |
+| Walk-in by type "Deluxe" when 204 is the only Deluxe room left for those nights | **Refused** 409 `NO_AVAILABILITY` (type capacity counts online bookings too) |
+| Walk-in in room 204, 23 → 25 Nov (leaves on the arrival day) | **Allowed** |
+| Walk-in in room 204, 27 → 29 Nov (arrives on the departure day) | **Allowed** |
+
+The room's `RESERVED` status is only a label for the housekeeping board; availability is always computed from reservation dates, so an upcoming online booking never blocks the room for other dates. When StayBook changes the dates, the old nights are released and the new nights protected in the same transaction. When StayBook cancels, the reservation becomes `CANCELLED` (kept with its room and dates as history) and the room is free for those nights. Protection is enforced on the server under row locks; the picker and walk-in warnings exist so staff understand why a room is not offered.
+
+`details.protected_by` on the 409 gives `source_system`, `booking_reference`, `reservation_code`, `room_number`, `check_in`, `check_out`. A clash with a front-desk reservation keeps the original message and has no details.
+
+### 11.4 Screens
+
+- **Online reservations** (sidebar, all staff; the count is your unread notifications, red when any are problems). Tabs: All, Upcoming arrivals, Arriving today, Cancelled, Sync issues. Filters: guest name, booking reference (`SB-…` or `RSV-…`), room, check-in, check-out, status. Columns: StayBook reference, Frontdesk code and reservation id, guest, room and type (plus the originally booked room if the front desk moved the guest), check-in, check-out, guests, status (and StayBook status), date and time received, synchronisation. Click a row for details: all of the above, quoted price, payment mode, and the history (received / changed / cancelled by StayBook, changes made at the desk and whether StayBook was told, notifications). "Open reservation" goes to the normal reservation page (room assignment, check-in…).
+- **Bell** (top bar, every page): unread notifications plus restaurant purchases needing attention. Opens a dropdown with the latest notifications; clicking one marks it read and opens the reservation.
+- **Reservation page**: a "StayBook online booking" card for StayBook reservations.
+- **Dashboard**: an "Online reservations" card (arriving today, upcoming, received today, next arrivals, sync issues in the last 7 days).
+- **Admin Console → Integrations** (administrators): the existing StayBook room mapping and configuration, plus **StayBook sync issues**: refused StayBook requests (status, code, message) and failed webhooks to StayBook with **Re-send**.
+
+### 11.5 Browser testing
+
+Use a development or staging database, never production. Run `npm run migrate` (it only adds the two tables), then `npm run dev`. Play StayBook from a terminal with the Booking API key from `.env`. Example (adjust the dates to a few days ahead and `staybook_room_id` to a room mapped in Admin Console → Integrations):
+
+```bash
+BASE=http://localhost:3000/api/v1/integrations/staybook
+KEY=<BOOKING_API_KEY>
+curl -s -X POST "$BASE/reservations" -H "X-Api-Key: $KEY" -H "Idempotency-Key: demo:create:SB-DEMO1:1" \
+  -H "Content-Type: application/json" -d @booking.json
+```
+
+with `booking.json`:
+
+```json
+{ "source_system": "STAYBOOK", "source_booking_id": "9001", "booking_reference": "SB-DEMO1", "hotel_id": 1, "staybook_room_id": 1,
+  "guest": { "first_name": "Ana", "last_name": "Reyes" }, "check_in": "2026-11-25", "check_out": "2026-11-27", "guests": 2, "nights": 2,
+  "nightly_rate": 3500, "total_amount": 7000, "currency": "PHP", "booking_status": "LOCAL_CONFIRMED", "payment_mode": "SIMULATED",
+  "updated_at": "2026-11-21T08:00:00.000Z" }
+```
+
+1. Sign in as a **receptionist** in one browser and an **administrator** in another. Within ~30 s both see the bell count and the "Online reservations" count rise, and a toast "New online reservation · Room …".
+2. Open the bell: the notification shows guest, room and reference. Click it: the details panel opens and the count drops **for that user only** (the other browser still shows it).
+3. Online reservations: try each filter and tab, open a row, then "Open reservation".
+4. Room protection: Reservations → New reservation (Ctrl/Cmd + A) with overlapping dates and the same room type: the form warns "Reserved online for these dates: Room …". Create a reservation by type for overlapping dates and click "Assign room": the online room is listed greyed out ("Online booking SB-DEMO1") and cannot be chosen. A reservation whose stay ends on the online check-in date is offered the room normally.
+5. Send the same `curl` again (same key): nothing new appears. With a new `Idempotency-Key`: 409 `DUPLICATE_RESERVATION`, still nothing new.
+6. `PATCH $BASE/reservations/SB-DEMO1` with new dates, matching `nights` and a later `updated_at` → "Online reservation updated" listing the change; the old nights are free again.
+7. `POST $BASE/reservations/SB-DEMO1/cancel` with `{"updated_at": "<later>"}` → "Online reservation cancelled"; the row stays under Cancelled and the room is offered for those dates.
+8. Send a booking with an unmapped `staybook_room_id` (e.g. 999) → "Synchronization failed" (red) in the bell and under Sync issues; administrators also see it in Admin Console → Integrations → StayBook sync issues.
+9. Book a room on dates already taken at the desk → "Room conflict warning" naming the reservation that holds the room.

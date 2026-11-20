@@ -1,6 +1,6 @@
 /** Walk-in / phone reservation entry (A1): the minimum needed for the PMS to run before the external Hotel Reservation System is connected. */
 import { api } from "./api.js";
-import { html, openModal, nest, money, toast, toastError } from "./ui.js";
+import { html, setHTML, openModal, nest, money, shortDate, toast, toastError } from "./ui.js";
 
 const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const plusDays = (iso, n) => new Date(new Date(`${iso}T00:00:00Z`).getTime() + n * 86400000).toISOString().slice(0, 10);
@@ -34,8 +34,12 @@ export async function openNewReservation() {
           <select name="roomType" required>${roomTypeOptions(types)}</select>
           <div class="hint">A specific room can be assigned now or at arrival.</div>
         </div>
+        <div class="alert alert-warning hidden" id="online-holds" role="status"></div>
       </fieldset>`,
-    onOpen: (form) => syncDates(form),
+    onOpen: (form) => {
+      syncDates(form);
+      watchOnlineHolds(form);
+    },
     onSubmit: (values) => api.post("/reservations", nest(values)),
   });
 }
@@ -63,6 +67,40 @@ export function startNewReservation() {
     }
   })();
   return pending;
+}
+
+/**
+ * Warns which rooms of the chosen type are already reserved by online
+ * (StayBook) guests on these dates. Informative only: the server refuses an
+ * overlapping booking regardless (409 ROOM_UNAVAILABLE / NO_AVAILABILITY).
+ */
+function watchOnlineHolds(form) {
+  const box = form.querySelector("#online-holds");
+  const field = (name) => form.querySelector(`[name="${name}"]`);
+  let seq = 0;
+  const refresh = async () => {
+    const checkIn = field("checkInDate").value;
+    const checkOut = field("checkOutDate").value;
+    const type = field("roomType").value;
+    const mine = ++seq;
+    if (!checkIn || !checkOut || checkOut <= checkIn) return box.classList.add("hidden");
+    try {
+      const holds = (await api.get("/online-reservations/holds", { checkIn, checkOut })).filter((h) => h.roomType === type);
+      if (mine !== seq) return undefined;
+      if (!holds.length) return box.classList.add("hidden");
+      setHTML(
+        box,
+        html`<strong>Reserved online for these dates:</strong> ${holds.map((h, i) => html`${i ? ", " : ""}Room ${h.roomNumber} (${h.bookingReference}, ${shortDate(h.checkInDate)} → ${shortDate(h.checkOutDate)})`)}.
+          These rooms are held for arriving StayBook guests and cannot be given to this guest.`
+      );
+      box.classList.remove("hidden");
+    } catch {
+      box.classList.add("hidden");
+    }
+    return undefined;
+  };
+  for (const name of ["checkInDate", "checkOutDate", "roomType"]) field(name).addEventListener("change", refresh);
+  refresh();
 }
 
 /** Keeps check-out after check-in in the date pickers. */

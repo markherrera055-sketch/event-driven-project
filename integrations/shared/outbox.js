@@ -15,11 +15,12 @@
  *   X-PMS-Signature: sha256=<hex HMAC-SHA256(secret, `${timestamp}.${rawBody}`)>
  */
 import { QueryTypes } from "sequelize";
-import { sequelize, IntegrationOutbox, OUTBOX_STATUS } from "../../models/index.js";
+import { sequelize, IntegrationOutbox, OUTBOX_STATUS, OUTBOX_TARGETS } from "../../models/index.js";
 import { config } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
 import { clientSettings } from "./clients.js";
 import { signPayload } from "./signature.js";
+import { recordWebhookFailure } from "../staybook/staybookService.js";
 
 export { signPayload };
 
@@ -72,6 +73,8 @@ async function deliver(row) {
       lastResponseStatus: status,
     });
     logger.warn("webhook_failed", { id: row.id, target: row.target, attempts, exhausted, error: err.message });
+    // StayBook bookings: tell the front desk that StayBook was not updated (Synchronization Failed).
+    if (exhausted && row.target === OUTBOX_TARGETS.BOOKING) await recordWebhookFailure(row);
   }
 }
 
