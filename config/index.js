@@ -101,6 +101,11 @@ export const config = {
     requireHttps: bool(process.env.INTEGRATION_REQUIRE_HTTPS, isProduction),
     // Max clock difference accepted on signed inbound requests (replay window).
     signatureToleranceSeconds: int(process.env.INTEGRATION_SIGNATURE_TOLERANCE_SECONDS, 300),
+    // StayBook online booking (calls in with the BOOKING key, see integrations/staybook).
+    staybook: {
+      // StayBook's id for THIS hotel. When set, bookings for any other StayBook hotel are refused.
+      hotelId: process.env.STAYBOOK_HOTEL_ID?.trim() || null,
+    },
     // One entry per external system. An empty API key disables that system.
     clients: {
       BOOKING: integrationClient("BOOKING", "RESERVATION"),

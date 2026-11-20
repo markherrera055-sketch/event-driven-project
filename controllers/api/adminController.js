@@ -7,6 +7,7 @@ import * as rooms from "../../services/roomService.js";
 import * as staff from "../../services/staffService.js";
 import { listOutbox, retryOutboxEvent, processOutbox } from "../../integrations/shared/outbox.js";
 import { integrationStatus } from "../../integrations/index.js";
+import * as staybookRooms from "../../integrations/staybook/roomMappings.js";
 
 const roomSchema = {
   roomNumber: v.string({ required: true, max: 10, pattern: /^[A-Za-z0-9-]+$/, patternMessage: "Letters, digits and dashes only." }),
@@ -80,6 +81,16 @@ export const integrations = asyncHandler(async (req, res) => {
   ]);
   ok(res, { status: integrationStatus(), outbox, requests });
 });
+
+/** StayBook room id ↔ Frontdesk room mapping (Admin Console → Integrations). */
+export const staybookRoomMappings = asyncHandler(async (req, res) => ok(res, await staybookRooms.listRoomMappings()));
+export const setStaybookRoomMapping = asyncHandler(async (req, res) => {
+  const { roomId, replace } = validate(req.body, { roomId: v.int({ required: true, min: 1 }), replace: v.bool() });
+  ok(res, await staybookRooms.setRoomMapping(req.params.staybookRoomId, roomId, req.user, { replace }));
+});
+export const deleteStaybookRoomMapping = asyncHandler(async (req, res) =>
+  ok(res, await staybookRooms.deleteRoomMapping(req.params.staybookRoomId, req.user))
+);
 
 export const retryOutbox = asyncHandler(async (req, res) => {
   const row = await retryOutboxEvent(Number(req.params.id));

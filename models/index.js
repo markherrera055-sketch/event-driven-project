@@ -23,6 +23,8 @@ import { Receipt } from "./Receipt.js";
 import { IntegrationRequest, INTEGRATION_SOURCES } from "./IntegrationRequest.js";
 import { IntegrationOutbox, OUTBOX_STATUS, OUTBOX_TARGETS } from "./IntegrationOutbox.js";
 import { Session } from "./Session.js";
+import { ExternalRoomMapping, EXTERNAL_SYSTEMS } from "./ExternalRoomMapping.js";
+import { ExternalBooking, EXTERNAL_SYNC_STATUS } from "./ExternalBooking.js";
 
 const restrict = { onDelete: "RESTRICT", onUpdate: "CASCADE" };
 
@@ -95,6 +97,15 @@ HousekeepingTask.belongsTo(Stay, { foreignKey: "stayId", as: "stay", ...restrict
 // IntegrationEvent 1 — 0..* IntegrationOutbox (one delivery row per receiving system)
 IntegrationEvent.hasMany(IntegrationOutbox, { foreignKey: "integrationEventId", as: "deliveries", ...restrict });
 IntegrationOutbox.belongsTo(IntegrationEvent, { foreignKey: "integrationEventId", as: "event", ...restrict });
+
+// Room 1 — 0..* ExternalRoomMapping (at most one per external system; e.g. StayBook room id → PMS room)
+Room.hasMany(ExternalRoomMapping, { foreignKey: "roomId", as: "externalMappings", ...restrict });
+ExternalRoomMapping.belongsTo(Room, { foreignKey: "roomId", as: "room", ...restrict });
+ExternalRoomMapping.belongsTo(User, { foreignKey: "createdBy", as: "creator", ...restrict });
+
+// Reservation 1 — 0..1 ExternalBooking (the external system's ids, quote and revision for a synced booking)
+Reservation.hasOne(ExternalBooking, { foreignKey: "reservationId", as: "externalBooking", ...restrict });
+ExternalBooking.belongsTo(Reservation, { foreignKey: "reservationId", as: "reservation", ...restrict });
 
 // Payment 1 — 0..1 Receipt  ("issues")
 Payment.hasOne(Receipt, { foreignKey: "paymentId", as: "receipt", ...restrict });
@@ -278,4 +289,8 @@ export {
   OUTBOX_STATUS,
   OUTBOX_TARGETS,
   Session,
+  ExternalRoomMapping,
+  EXTERNAL_SYSTEMS,
+  ExternalBooking,
+  EXTERNAL_SYNC_STATUS,
 };

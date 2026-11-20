@@ -10,6 +10,8 @@ process.env.BOOKING_API_KEY = "test-booking-key-0123456789";
 process.env.POS_API_KEY = "test-pos-key-0123456789";
 process.env.HOUSEKEEPING_API_KEY = "test-housekeeping-key-0123456789";
 process.env.HR_API_KEY = "test-hr-key-0123456789";
+// StayBook (online booking, uses the BOOKING key): this Frontdesk is StayBook hotel 1.
+process.env.STAYBOOK_HOTEL_ID = "1";
 // Housekeeping must sign its requests.
 process.env.HOUSEKEEPING_INBOUND_SECRET = "test-housekeeping-inbound-secret";
 

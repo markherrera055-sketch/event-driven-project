@@ -64,6 +64,7 @@ docs/                architecture, API reference, integration guide, Postman col
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): architecture, diagram traceability, database relationships, workflows, security, scope decisions
 - [docs/API.md](docs/API.md): staff REST API reference with request/response examples
 - [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md): how to connect a POS or Hotel Reservation System (auth, idempotency, webhooks)
+- [docs/STAYBOOK.md](docs/STAYBOOK.md): StayBook online booking ↔ Frontdesk integration (room mapping, contract, retries, what StayBook must add)
 - [docs/postman/HotelFrontDesk-PMS.postman_collection.json](docs/postman/HotelFrontDesk-PMS.postman_collection.json): importable Postman collection
 
 ## Testing

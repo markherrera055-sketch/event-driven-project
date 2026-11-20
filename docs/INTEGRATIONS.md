@@ -151,6 +151,8 @@ await fetch(`${PMS}/api/v1/integrations/housekeeping/cleaning-completed`, {
 
 ## 3. Member 1: Guest Booking System
 
+> **StayBook (the Member 1 online booking app) sells specific rooms, not room types.** It uses the room-based contract under `/api/v1/integrations/staybook` with the same `BOOKING_API_KEY`: explicit StayBook-room → Frontdesk-room mapping, quoted price, StayBook status and revision. See **[STAYBOOK.md](STAYBOOK.md)**. The type-based `/booking` endpoints below remain available.
+
 Base path `/booking`. Workflow:
 
 1. `GET /room-types` once: the room types and their stable `room_type_id`.

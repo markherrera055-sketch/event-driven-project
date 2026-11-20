@@ -154,3 +154,6 @@ Room `status` follows the lifecycle `AVAILABLE`, `RESERVED`, `OCCUPIED`, `DIRTY`
 **Password policy** (all endpoints that set a password): 10–72 characters with upper- and lowercase letters, a number and a symbol; must not contain the username or be a common password. Passwords are bcrypt-hashed (cost 12) and never returned. A user with a pending forced change gets `403 PASSWORD_CHANGE_REQUIRED` from every endpoint except `/me` and `/me/password`.
 | GET | `/admin/integrations` | A | Integration configuration status, outbox events, inbound request log |
 | POST | `/admin/integrations/outbox/{id}/retry` | A | Re-queue a failed webhook |
+| GET | `/admin/staybook/room-mappings` | A | Every room with its StayBook room id (or `null`), plus mappings to deleted rooms |
+| PUT | `/admin/staybook/room-mappings/{staybookRoomId}` | A | Map a StayBook room to a Frontdesk room: `{ "roomId": 3, "replace": false }`. 409 `ROOM_ALREADY_MAPPED` if the room has another StayBook id (send `replace: true` to swap) |
+| DELETE | `/admin/staybook/room-mappings/{staybookRoomId}` | A | Remove a mapping (existing reservations are kept) |

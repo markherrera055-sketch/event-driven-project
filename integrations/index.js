@@ -7,6 +7,7 @@
  *   /pos/*            Restaurant POS          (Member 4)  charges to a guest's room folio
  *   /housekeeping/*   Housekeeping System     (Member 3)  RoomVacated out, cleaning started / completed in
  *   /hr/*             HR and Payroll System   (Member 5)  read-only verification of housekeeping task records
+ *   /staybook/*       StayBook online booking (Member 1)  room-based reservations in (BOOKING key; see docs/STAYBOOK.md)
  *
  * Pipeline for every request:
  *   HTTPS check → per-IP limit → API key (who is calling) → per-system limit
@@ -29,6 +30,7 @@ import bookingRoutes from "./booking/routes.js";
 import posRoutes from "./pos/routes.js";
 import housekeepingRoutes from "./housekeeping/routes.js";
 import hrRoutes from "./hr/routes.js";
+import staybookRoutes from "./staybook/routes.js";
 
 export function integrationRouter() {
   const router = express.Router();
@@ -43,6 +45,7 @@ export function integrationRouter() {
   router.use("/pos", posRoutes);
   router.use("/housekeeping", housekeepingRoutes);
   router.use("/hr", hrRoutes);
+  router.use("/staybook", staybookRoutes);
   // Never fall through to the staff API behind this router.
   router.use((req, res) => fail(res, 404, "NOT_FOUND", `No integration endpoint ${req.method} ${req.baseUrl}${req.path}`));
   return router;
@@ -60,4 +63,9 @@ export const integrationStatus = () => ({
   rateLimitPerMinute: config.integrations.rateLimitPerMinute,
   requireHttps: config.integrations.requireHttps,
   signatureToleranceSeconds: config.integrations.signatureToleranceSeconds,
+  staybook: {
+    basePath: "/api/v1/integrations/staybook",
+    client: "BOOKING",
+    hotelId: config.integrations.staybook.hotelId,
+  },
 });

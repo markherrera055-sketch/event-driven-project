@@ -101,5 +101,8 @@ router.patch("/admin/staff/:id", adminOnly, admin.updateStaff);
 router.post("/admin/staff/:id/reset-password", adminOnly, admin.resetStaffPassword);
 router.get("/admin/integrations", adminOnly, admin.integrations);
 router.post("/admin/integrations/outbox/:id/retry", adminOnly, admin.retryOutbox);
+router.get("/admin/staybook/room-mappings", adminOnly, admin.staybookRoomMappings);
+router.put("/admin/staybook/room-mappings/:staybookRoomId", adminOnly, admin.setStaybookRoomMapping);
+router.delete("/admin/staybook/room-mappings/:staybookRoomId", adminOnly, admin.deleteStaybookRoomMapping);
 
 export default router;
