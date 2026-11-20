@@ -106,6 +106,13 @@ export const config = {
       // StayBook's id for THIS hotel. When set, bookings for any other StayBook hotel are refused.
       hotelId: process.env.STAYBOOK_HOTEL_ID?.trim() || null,
     },
+    // Restaurant POS purchase notifications (POST /integrations/pos/orders, see docs/POS_ORDERS.md).
+    posOrders: {
+      // Restaurant / branch ids this hotel accepts orders from (comma-separated). Empty = any id.
+      restaurantIds: list(process.env.POS_RESTAURANT_IDS),
+      // Used when the POS does not send restaurant_id (single-restaurant hotels).
+      defaultRestaurantId: process.env.POS_DEFAULT_RESTAURANT_ID?.trim() || "MAIN",
+    },
     // One entry per external system. An empty API key disables that system.
     clients: {
       BOOKING: integrationClient("BOOKING", "RESERVATION"),

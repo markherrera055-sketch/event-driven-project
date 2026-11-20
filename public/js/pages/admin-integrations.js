@@ -33,13 +33,32 @@ const staybookCard = (status, mapping) => html`<div class="card"><div class="car
       ${r.staybookRoomId ? html` <button class="btn btn-sm btn-secondary" data-unmap="${r.staybookRoomId}" data-room-number="${r.roomNumber}">Remove</button>` : ""}</td></tr>`)}
   </tbody></table></div></div></div>`;
 
+/** Restaurant POS purchase notifications (front-desk review queue). Configuration lives in .env. */
+const posOrdersCard = (p, sum) => html`<div class="card"><div class="card-head"><h2>Restaurant POS purchases <span class="muted small">· front-desk review</span></h2>${yesNo(p.enabled, "Enabled", "Disabled")}</div>
+  <div class="card-body">
+    ${p.enabled && !p.signed ? html`<div class="alert alert-warning">POS requests are authenticated by API key only. Set <code>POS_INBOUND_SECRET</code> (and share it with the POS developer) so every purchase notification is HMAC-signed and replay-protected before go-live.</div>` : ""}
+    <dl class="dl">
+      <dt>Endpoint</dt><dd class="mono">POST ${p.endpoint}</dd>
+      <dt>Signed requests</dt><dd>${yesNo(p.signed, "Required (HMAC)", "Not required")}</dd>
+      <dt>Accepted restaurants</dt><dd>${p.restaurantIds.length ? html`<span class="mono">${p.restaurantIds.join(", ")}</span>` : html`<span class="muted">any id (POS_RESTAURANT_IDS not set)</span>`}</dd>
+      <dt>Default restaurant id</dt><dd class="mono">${p.defaultRestaurantId}</dd>
+      <dt>Awaiting review</dt><dd>${sum ? html`${sum.open} <a class="small" href="/front-desk/restaurant-charges">Open queue →</a>` : "—"}</dd>
+      <dt>Voided after billing</dt><dd>${sum ? sum.needsAdjustment : "—"}</dd>
+      <dt>Legacy direct posting</dt><dd class="small"><span class="mono">POST /pos/room-charges</span> is deprecated but still accepted (no staff review). An order is never billed twice across both paths.</dd>
+    </dl></div></div>`;
+
 async function load() {
   try {
-    const [{ status, outbox, requests }, mapping] = await Promise.all([api.get("/admin/integrations"), api.get("/admin/staybook/room-mappings")]);
+    const [{ status, outbox, requests }, mapping, posSummary] = await Promise.all([
+      api.get("/admin/integrations"),
+      api.get("/admin/staybook/room-mappings"),
+      api.get("/pos-orders/summary").catch(() => null),
+    ]);
     setHTML(
       root,
       html`<div class="alert alert-info">The Guest Booking System, Restaurant POS, Housekeeping System and HR/Payroll are separate applications. They connect to this PMS through authenticated endpoints under <code>/api/v1/integrations</code>. Keys, secrets and webhook URLs are configured in the server's <code>.env</code> file (see docs/INTEGRATIONS.md).${status.requireHttps ? "" : " HTTPS is not enforced on this server (development)."}</div>
       <div class="grid grid-2">${status.clients.map((c) => clientCard(c, status))}</div>
+      ${posOrdersCard(status.posOrders, posSummary)}
       ${staybookCard(status, mapping)}
       <div class="card"><div class="card-head"><h2>Outbound webhooks</h2><span class="muted small">latest 50</span></div><div class="card-body flush">${
         outbox.length

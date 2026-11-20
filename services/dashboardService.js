@@ -22,6 +22,7 @@ import {
 import { today } from "../utils/dates.js";
 import { config } from "../config/index.js";
 import { paymentJSON } from "./serializers.js";
+import { posOrderSummary } from "./posOrderReviewService.js";
 
 const startOfHotelDay = (isoDate) => new Date(`${isoDate}T00:00:00${config.hotel.utcOffset}`);
 
@@ -77,7 +78,10 @@ export async function getDashboard() {
     limit: 8,
   });
 
+  const pos = await posOrderSummary();
   const notifications = [];
+  if (pos.open) notifications.push({ level: "warning", text: `${pos.open} restaurant purchase(s) are waiting for review before they can be billed.`, href: "/front-desk/restaurant-charges" });
+  if (pos.needsAdjustment) notifications.push({ level: "danger", text: `${pos.needsAdjustment} restaurant purchase(s) were voided by the POS after being billed — correct the bill.`, href: "/front-desk/restaurant-charges?status=ADDED_TO_FOLIO&needsAdjustment=true" });
   if (overdueDepartures) notifications.push({ level: "warning", text: `${overdueDepartures} guest(s) are past their check-out date.`, href: "/front-desk/reservations?view=departures" });
   if (lateArrivals) notifications.push({ level: "info", text: `${lateArrivals} confirmed reservation(s) from earlier dates have not arrived.`, href: "/front-desk/reservations?view=arrivals" });
   if (unassignedArrivals) notifications.push({ level: "warning", text: `${unassignedArrivals} arriving reservation(s) still need a room assigned.`, href: "/front-desk/reservations?view=arrivals" });
@@ -101,5 +105,6 @@ export async function getDashboard() {
       roomNumber: p.bill?.stay?.reservation?.room?.roomNumber,
     })),
     notifications,
+    restaurantCharges: pos,
   };
 }

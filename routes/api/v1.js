@@ -13,6 +13,7 @@ import * as desk from "../../controllers/api/frontDeskController.js";
 import * as property from "../../controllers/api/propertyController.js";
 import * as admin from "../../controllers/api/adminController.js";
 import * as account from "../../controllers/api/accountController.js";
+import * as posOrders from "../../controllers/api/posOrderController.js";
 import { Reservation } from "../../models/index.js";
 import { fail } from "../../utils/http.js";
 
@@ -72,6 +73,15 @@ router.get("/bills/:id/totals", anyStaff, desk.billTotals);
 router.post("/bills/:id/adjustments", receptionistOnly, desk.adjustBill);
 router.post("/bills/:id/confirm", receptionistOnly, desk.confirmBill);
 router.get("/bills/:id/payments", anyStaff, desk.listPayments);
+
+// Restaurant charges: purchase notifications from the external Restaurant POS, reviewed before
+// they reach a guest folio. All staff can see them; only receptionists (who own billing) decide.
+router.get("/pos-orders", anyStaff, posOrders.list);
+router.get("/pos-orders/summary", anyStaff, posOrders.summary);
+router.get("/pos-orders/:id", anyStaff, posOrders.show);
+router.post("/pos-orders/:id/approve", receptionistOnly, posOrders.approve);
+router.post("/pos-orders/:id/reject", receptionistOnly, posOrders.reject);
+router.post("/pos-orders/:id/resolve-void", receptionistOnly, posOrders.resolveVoid);
 
 // Payment module (8.0, 9.0) and Receipt & Checkout module
 router.post("/payments", receptionistOnly, desk.pay);

@@ -46,7 +46,7 @@ routes/              index.js (pages, auth) + api/v1.js (staff REST API)
 integrations/        the other members' systems — kept separate from the core
   shared/            client registry + scopes, API-key / signature auth, idempotency, event log + outbox, webhook delivery
   booking/           Member 1 Guest Booking System (reservations, availability, room types)
-  pos/               Member 4 Restaurant POS (charge to room)
+  pos/               Member 4 Restaurant POS (purchase notifications for front-desk review; legacy charge to room)
   housekeeping/      Member 3 Housekeeping System (cleaning started / completed, room board)
   hr/                Member 5 HR and Payroll (read-only verification of housekeeping tasks)
   paymentGateway/    Payment Gateway Adapter (sandbox driver)
@@ -65,6 +65,7 @@ docs/                architecture, API reference, integration guide, Postman col
 - [docs/API.md](docs/API.md): staff REST API reference with request/response examples
 - [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md): how to connect a POS or Hotel Reservation System (auth, idempotency, webhooks)
 - [docs/STAYBOOK.md](docs/STAYBOOK.md): StayBook online booking ↔ Frontdesk integration (room mapping, contract, retries, what StayBook must add)
+- [docs/POS_ORDERS.md](docs/POS_ORDERS.md): Restaurant POS purchase notifications → front-desk review → guest folio (contract, statuses, security, setup, go-live checklist)
 - [docs/postman/HotelFrontDesk-PMS.postman_collection.json](docs/postman/HotelFrontDesk-PMS.postman_collection.json): importable Postman collection
 
 ## Testing

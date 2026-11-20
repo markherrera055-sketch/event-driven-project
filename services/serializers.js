@@ -200,3 +200,65 @@ export const reservationJSON = (r) => {
     stay: x.stay ? stayJSON(x.stay) : x.stay === null ? null : undefined,
   };
 };
+
+/** Human-friendly reference of a restaurant purchase notification (PO-000042). */
+export const posOrderRef = (id) => `PO-${String(id).padStart(6, "0")}`;
+
+const money2 = (v) => (v === null || v === undefined ? null : Number(v));
+
+/**
+ * Restaurant POS purchase for STAFF screens (session API only). Contains the
+ * customer name as the POS sent it, which is never returned to the POS.
+ */
+export const posOrderJSON = (o) => {
+  const x = plain(o);
+  if (!x) return null;
+  const r = x.reservation;
+  return {
+    id: x.id,
+    orderRef: posOrderRef(x.id),
+    restaurantId: x.restaurantId,
+    outletName: x.outletName,
+    externalOrderId: x.externalOrderId,
+    status: x.status,
+    customerName: x.customerName,
+    guestReference: x.guestReference,
+    reservationReference: x.reservationReference,
+    roomNumber: x.roomNumber,
+    items: (x.items || []).map((i) => ({ ...i, unitPrice: Number(i.unitPrice), lineTotal: money2(i.lineTotal) })),
+    subtotal: money2(x.subtotal),
+    serviceCharge: money2(x.serviceCharge),
+    tax: money2(x.tax),
+    discount: money2(x.discount),
+    total: money2(x.total),
+    currency: x.currency,
+    orderedAt: x.orderedAt,
+    posPaymentStatus: x.posPaymentStatus,
+    posOrderStatus: x.posOrderStatus,
+    matchIssues: x.matchIssues || [],
+    reservation: r
+      ? {
+          id: r.id,
+          reservationCode: r.reservationCode,
+          status: r.status,
+          roomNumber: r.room?.roomNumber ?? null,
+          guestName: r.guest ? `${r.guest.firstName} ${r.guest.lastName}` : null,
+          guestId: r.guestId,
+        }
+      : null,
+    stayId: x.matchedStayId,
+    chargeId: x.stayChargeId,
+    reviewedBy: x.reviewer ? userRef(x.reviewer) : x.reviewedBy ?? null,
+    reviewedAt: x.reviewedAt,
+    reviewNote: x.reviewNote,
+    rejectionReason: x.rejectionReason,
+    receivedAt: x.receivedAt,
+    lastDeliveryAt: x.lastDeliveryAt,
+    deliveryCount: x.deliveryCount,
+    processingError: x.processingError,
+    voidedAt: x.voidedAt,
+    needsAdjustment: !!x.needsAdjustment,
+    adjustmentResolvedBy: x.adjustmentResolver ? userRef(x.adjustmentResolver) : x.adjustmentResolvedBy ?? null,
+    adjustmentResolvedAt: x.adjustmentResolvedAt,
+  };
+};

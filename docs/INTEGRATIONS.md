@@ -7,7 +7,7 @@ This guide is for the members who build the other hotel systems. Your system sta
 | 1 | Guest Booking System | create, change and cancel reservations; read room types and availability | a guest checks in or out; the front desk changes one of your bookings |
 | 2 | **Frontdesk / PMS** (this system) | n/a | n/a |
 | 3 | Housekeeping System | report cleaning started / completed; read the room board | a room is vacated (create a cleaning task); a room's status changes; a room is marked clean |
-| 4 | Restaurant POS | charge a restaurant bill to a guest's room | a guest checks in (room can be charged) or out (stop charging) |
+| 4 | Restaurant POS | notify a hotel guest's purchase for front-desk review ([POS_ORDERS.md](POS_ORDERS.md)); legacy: charge directly to the room | a guest checks in (room can be charged) or out (stop charging); a purchase was added to the folio or rejected |
 | 5 | HR and Payroll | verify housekeeping job records | nothing (HR only reads) |
 
 The PMS is the source of truth for reservations, room assignments, room status, check-in / check-out and the guest folio. Each system keeps owning its own data (bookings and payments online, cleaning staff and schedules, restaurant orders, employees and payroll).
@@ -74,7 +74,7 @@ Each key carries only the permissions (scopes) of its system. Calling another sy
 | System | Scopes |
 |---|---|
 | BOOKING | `reservations:read`, `reservations:write` |
-| POS | `folio:read`, `room_charges:write` |
+| POS | `folio:read`, `room_charges:write`, `pos_orders:write`, `pos_orders:read` |
 | HOUSEKEEPING | `rooms:read`, `housekeeping:write` |
 | HR | `housekeeping_tasks:read` |
 
@@ -248,7 +248,9 @@ Both return the same object as the create call. On a date change, the assigned r
 
 ## 4. Member 4: Restaurant POS (charge to room)
 
-Base path `/pos`. Workflow:
+> **New integrations: use `POST /pos/orders` — see [POS_ORDERS.md](POS_ORDERS.md).** The POS notifies each completed hotel-guest purchase; the front desk verifies the guest and adds it to the folio (or rejects it); the POS receives `PosOrderReviewed`. The direct `POST /pos/room-charges` flow below is **deprecated** (responses carry `Deprecation: true`) but still works unchanged for existing clients. An order is never billed twice across the two paths.
+
+Base path `/pos`. Legacy direct-posting workflow:
 
 1. The guest orders and asks to *charge to room*.
 2. The cashier enters the room number. Call `GET /pos/in-house?room_number=204`. The response gives `reservation_id`, a masked name (`J. Doe`) and whether the folio is open. You also get these from the `GuestCheckedIn` webhook.

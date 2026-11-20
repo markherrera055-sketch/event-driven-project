@@ -79,6 +79,8 @@ const BADGE = {
   RECEPTIONIST: "sky", ADMINISTRATOR: "violet",
   FRONT_DESK: "plain", RESERVATION_SYSTEM: "violet", BOOKING: "violet", POS: "sky", HOUSEKEEPING: "amber", HR: "plain",
   AVAILABLE: "green", RESERVED: "blue", MAINTENANCE: "red", INACTIVE: "plain", DELETED: "plain",
+  // Restaurant POS purchases
+  PENDING_REVIEW: "amber", NEEDS_GUEST_VERIFICATION: "red", ADDED_TO_FOLIO: "green", REJECTED: "plain", ALREADY_PAID: "sky",
 };
 export const badge = (status, text) => {
   const tone = BADGE[status] || "plain";

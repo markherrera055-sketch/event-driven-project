@@ -8,6 +8,10 @@
   </div>
   <div class="topbar-right">
     <span class="today" id="today"></span>
+    <a class="notify-bell" href="/front-desk/restaurant-charges" id="notify-bell" title="Restaurant purchases awaiting review" aria-label="Restaurant purchases awaiting review">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+      <span class="notify-count hidden" data-pos-count></span>
+    </a>
     <a class="user-chip" href="/account" title="Account settings">
       <div class="avatar" id="avatar">{{currentUser.fullName}}</div>
       <div class="who">{{currentUser.fullName}}<small>{{#if isAdmin}}Administrator{{else}}Receptionist{{/if}}</small></div>

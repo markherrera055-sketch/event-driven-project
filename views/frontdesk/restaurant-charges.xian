@@ -1,0 +1,7 @@
+{{> layoutStart}}
+<div class="page-head">
+  <div><h1>Restaurant charges</h1><p>Purchases sent by the restaurant POS — verify the guest, then add them to the folio or reject them</p></div>
+  <div class="page-actions" id="page-actions"></div>
+</div>
+<div id="page-root"><div class="loading"><span class="spinner"></span>Loading…</div></div>
+{{> layoutEnd}}

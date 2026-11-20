@@ -14,6 +14,9 @@
     <a href="/front-desk/in-house" class="{{#if (eq nav "in-house")}}active{{/if}}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21V8l9-5 9 5v13"/><path d="M9 21v-7h6v7"/></svg>
       In-house &amp; billing</a>
+    <a href="/front-desk/restaurant-charges" class="{{#if (eq nav "restaurant-charges")}}active{{/if}}">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 3v7a3 3 0 0 0 6 0V3M7 3v18M17 21V3c-2.2 0-4 2.7-4 6v4h4"/></svg>
+      Restaurant charges<span class="nav-count hidden" data-pos-count aria-label="purchases awaiting review"></span></a>
     <a href="/guests" class="{{#if (eq nav "guests")}}active{{/if}}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="8" r="4"/><path d="M2 21c0-4 3-7 7-7s7 3 7 7"/><path d="M17 11a3 3 0 1 0 0-6M22 21c0-3-2-5.5-5-6.5"/></svg>
       Guests</a>

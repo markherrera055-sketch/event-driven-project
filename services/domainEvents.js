@@ -36,6 +36,7 @@ export const EVENTS = Object.freeze({
   ROOM_CLEANED: "RoomCleaned",
   ROOM_CHARGE_POSTED: "RoomChargePosted",
   GUEST_FOLIO_UPDATED: "GuestFolioUpdated",
+  POS_ORDER_REVIEWED: "PosOrderReviewed",
 });
 
 /** Which record an event is about (used for the event log index). */
@@ -53,4 +54,5 @@ export const EVENT_AGGREGATE = Object.freeze({
   RoomCleaned: ["ROOM", "room_id"],
   RoomChargePosted: ["STAY", "stay_id"],
   GuestFolioUpdated: ["STAY", "stay_id"],
+  PosOrderReviewed: ["POS_ORDER", "pos_order_id"],
 });

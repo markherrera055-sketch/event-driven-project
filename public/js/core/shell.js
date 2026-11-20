@@ -1,7 +1,8 @@
-/** Behaviour shared by every authenticated page: mobile menu, today's date, avatar initials, keyboard shortcuts. */
+/** Behaviour shared by every authenticated page: mobile menu, today's date, avatar initials, keyboard shortcuts, restaurant-charge notifications. */
 import { initials, session } from "./ui.js";
 import { registerShortcut, shortcutLabel, shortcutAria } from "./shortcuts.js";
 import { startNewReservation } from "./reservationForm.js";
+import "./notifications.js";
 
 const toggle = document.getElementById("menu-toggle");
 const sidebar = document.getElementById("sidebar");

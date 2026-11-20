@@ -13,6 +13,7 @@ import { hotelDate, today, nightsBetween } from "../utils/dates.js";
 import { multiplyMoney, toCents, fromCents } from "../utils/money.js";
 import { adjustmentJSON } from "./serializers.js";
 import { withTransaction } from "./tx.js";
+import { assertNoOpenPosOrders } from "./posOrderReviewService.js";
 import { logger } from "../utils/logger.js";
 
 /** Reads the authoritative totals from the v_bill_total view. */
@@ -98,6 +99,8 @@ export async function confirmBill(billId, actor) {
   return withTransaction(null, async (t) => {
     const bill = await lockBill(billId, t);
     if (bill.status !== BILL_STATUS.DRAFT) throw conflict("BILL_NOT_DRAFT", `The bill is already ${bill.status}.`);
+    // Restaurant purchases still awaiting review would be missed once the bill is frozen.
+    await assertNoOpenPosOrders(bill.stayId, t);
     const totals = await getBillTotals(bill.id, t);
     if (toCents(totals.totalDue) <= 0) {
       throw conflict("BILL_TOTAL_ZERO", "The total due must be greater than zero to take payment.");

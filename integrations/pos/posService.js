@@ -1,5 +1,9 @@
 /**
- * Restaurant POS (Member 4) → PMS: "Charge to room".
+ * Restaurant POS (Member 4) → PMS: "Charge to room" — DEPRECATED direct posting.
+ * Kept unchanged for existing POS clients. New integrations send purchase
+ * notifications to POST /pos/orders instead (orderService.js), which the front
+ * desk reviews before anything reaches the folio. Both paths refuse an order
+ * already charged through the other one.
  *
  * The POS identifies the stay by the PMS reservation_id (from the in-house
  * lookup or the GuestCheckedIn webhook) plus the room number, and optionally
@@ -15,7 +19,7 @@
  * The charge is written to the Guest Folio and is billed at checkout.
  */
 import { UniqueConstraintError } from "sequelize";
-import { Stay, StayCharge, Reservation, Room, RESERVATION_STATUS, STAY_STATUS } from "../../models/index.js";
+import { Stay, StayCharge, Reservation, Room, PosOrder, RESERVATION_STATUS, STAY_STATUS, POS_ORDER_STATUS } from "../../models/index.js";
 import { AppError, conflict, validationError } from "../../utils/errors.js";
 import { sumMoney, toCents } from "../../utils/money.js";
 import { config } from "../../config/index.js";
@@ -98,6 +102,14 @@ export async function postRoomCharge(input) {
       });
       if (existing) {
         throw conflict("DUPLICATE_TRANSACTION", "This POS transaction was already posted.", chargeView(existing, existing.stay.reservation, existing.stay.reservation.room));
+      }
+      // The same order already added to a folio through the review queue (POST /pos/orders)?
+      const reviewed = await PosOrder.findOne({
+        where: { sourceSystem: POS_SOURCE, externalOrderId: input.external_transaction_id, status: POS_ORDER_STATUS.ADDED_TO_FOLIO },
+        transaction: t,
+      });
+      if (reviewed) {
+        throw conflict("DUPLICATE_TRANSACTION", "This POS order was already added to the guest folio through the front-desk review.", { charge_id: reviewed.stayChargeId });
       }
 
       const reservation = await Reservation.findByPk(input.reservation_id, {

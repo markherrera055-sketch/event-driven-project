@@ -25,6 +25,7 @@ import { IntegrationOutbox, OUTBOX_STATUS, OUTBOX_TARGETS } from "./IntegrationO
 import { Session } from "./Session.js";
 import { ExternalRoomMapping, EXTERNAL_SYSTEMS } from "./ExternalRoomMapping.js";
 import { ExternalBooking, EXTERNAL_SYNC_STATUS } from "./ExternalBooking.js";
+import { PosOrder, POS_ORDER_STATUS, OPEN_POS_ORDER_STATUSES } from "./PosOrder.js";
 
 const restrict = { onDelete: "RESTRICT", onUpdate: "CASCADE" };
 
@@ -106,6 +107,15 @@ ExternalRoomMapping.belongsTo(User, { foreignKey: "createdBy", as: "creator", ..
 // Reservation 1 — 0..1 ExternalBooking (the external system's ids, quote and revision for a synced booking)
 Reservation.hasOne(ExternalBooking, { foreignKey: "reservationId", as: "externalBooking", ...restrict });
 ExternalBooking.belongsTo(Reservation, { foreignKey: "reservationId", as: "reservation", ...restrict });
+
+// Restaurant POS purchase notifications (review queue): the reservation the POS referred to,
+// the in-house stay it was matched / approved for, and the folio charge created on approval.
+PosOrder.belongsTo(Reservation, { foreignKey: "matchedReservationId", as: "reservation", ...restrict });
+PosOrder.belongsTo(Stay, { foreignKey: "matchedStayId", as: "stay", ...restrict });
+PosOrder.belongsTo(StayCharge, { foreignKey: "stayChargeId", as: "charge", ...restrict });
+StayCharge.hasOne(PosOrder, { foreignKey: "stayChargeId", as: "posOrder", ...restrict });
+PosOrder.belongsTo(User, { foreignKey: "reviewedBy", as: "reviewer", ...restrict });
+PosOrder.belongsTo(User, { foreignKey: "adjustmentResolvedBy", as: "adjustmentResolver", ...restrict });
 
 // Payment 1 — 0..1 Receipt  ("issues")
 Payment.hasOne(Receipt, { foreignKey: "paymentId", as: "receipt", ...restrict });
@@ -293,4 +303,7 @@ export {
   EXTERNAL_SYSTEMS,
   ExternalBooking,
   EXTERNAL_SYNC_STATUS,
+  PosOrder,
+  POS_ORDER_STATUS,
+  OPEN_POS_ORDER_STATUSES,
 };

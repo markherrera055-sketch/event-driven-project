@@ -105,6 +105,27 @@ export const roomChargePostedData = (charge, stay, reservation, room) => ({
   transaction_date: charge.transactionAt,
 });
 
+/**
+ * Sent to the POS when the front desk decides on one of its purchase
+ * notifications. status: ADDED_TO_FOLIO | REJECTED. No guest names.
+ */
+export const posOrderReviewedData = (order, { orderRef, reservation, room } = {}) => ({
+  pos_order_id: order.id,
+  order_ref: orderRef,
+  restaurant_id: order.restaurantId,
+  external_order_id: order.externalOrderId,
+  status: order.status,
+  reservation_id: reservation?.id ?? null,
+  reservation_code: reservation?.reservationCode ?? null,
+  stay_id: order.matchedStayId ?? null,
+  room_number: room?.roomNumber ?? null,
+  charge_id: order.stayChargeId ?? null,
+  amount: Number(order.total),
+  currency: order.currency,
+  reviewed_at: order.reviewedAt,
+  rejection_reason: order.rejectionReason ?? null,
+});
+
 export const guestFolioUpdatedData = (folio, cause) => ({
   reservation_id: folio.reservationId,
   stay_id: folio.stayId,

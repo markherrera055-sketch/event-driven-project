@@ -4,7 +4,8 @@
  * external systems authenticate with their own API key only.
  *
  *   /booking/*        Guest Booking System    (Member 1)  reservations in, reservation status out
- *   /pos/*            Restaurant POS          (Member 4)  charges to a guest's room folio
+ *   /pos/*            Restaurant POS          (Member 4)  purchase notifications for front-desk review (/orders),
+ *                                                         legacy direct charges to a guest's room folio (/room-charges)
  *   /housekeeping/*   Housekeeping System     (Member 3)  RoomVacated out, cleaning started / completed in
  *   /hr/*             HR and Payroll System   (Member 5)  read-only verification of housekeeping task records
  *   /staybook/*       StayBook online booking (Member 1)  room-based reservations in (BOOKING key; see docs/STAYBOOK.md)
@@ -25,7 +26,7 @@ import { requireHttps, authenticate, requireSignedWrites } from "./shared/auth.j
 import { idempotent } from "./shared/idempotency.js";
 import { registerIntegrationSubscriptions, subscribedEvents } from "./shared/subscriptions.js";
 import { startOutboxWorker } from "./shared/outbox.js";
-import { clientStatus } from "./shared/clients.js";
+import { clientStatus, clientSettings } from "./shared/clients.js";
 import bookingRoutes from "./booking/routes.js";
 import posRoutes from "./pos/routes.js";
 import housekeepingRoutes from "./housekeeping/routes.js";
@@ -67,5 +68,12 @@ export const integrationStatus = () => ({
     basePath: "/api/v1/integrations/staybook",
     client: "BOOKING",
     hotelId: config.integrations.staybook.hotelId,
+  },
+  posOrders: {
+    endpoint: "/api/v1/integrations/pos/orders",
+    restaurantIds: config.integrations.posOrders.restaurantIds,
+    defaultRestaurantId: config.integrations.posOrders.defaultRestaurantId,
+    signed: !!clientSettings("POS").inboundSecret,
+    enabled: !!clientSettings("POS").apiKey,
   },
 });

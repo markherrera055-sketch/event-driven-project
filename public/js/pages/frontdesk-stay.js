@@ -13,6 +13,32 @@ const root = $("#page-root");
 const id = session.entityId;
 let s;
 let gateway = { sandbox: true };
+let posOrders = [];
+
+const openPosOrders = () => posOrders.filter((o) => o.status === "PENDING_REVIEW" || o.status === "NEEDS_GUEST_VERIFICATION");
+
+/** Restaurant purchases still awaiting review block bill confirmation (server-enforced: POS_ORDERS_PENDING). */
+function posPendingNotice() {
+  const n = openPosOrders().length;
+  if (!n || s.status !== "IN_HOUSE" || (s.bill && s.bill.status !== "DRAFT")) return "";
+  return html`<div class="alert alert-warning"><span><strong>${n} restaurant purchase${n === 1 ? " is" : "s are"} waiting for review.</strong>
+    The bill cannot be confirmed until ${n === 1 ? "it is" : "they are"} added to the folio or rejected. <a href="/front-desk/restaurant-charges">Review restaurant charges</a></span></div>`;
+}
+
+const POS_STATUS_TEXT = { PENDING_REVIEW: "Awaiting review", NEEDS_GUEST_VERIFICATION: "Needs verification", ADDED_TO_FOLIO: "On folio", REJECTED: "Rejected", ALREADY_PAID: "Paid at restaurant" };
+
+/** POS purchases that referred to this reservation. Paid-at-restaurant ones are shown for information only. */
+function posOrdersCard() {
+  if (!posOrders.length) return "";
+  return html`<div class="card"><div class="card-head"><h2>Restaurant purchases</h2><a class="small" href="/front-desk/restaurant-charges">All restaurant charges →</a></div>
+    <div class="card-body flush"><div class="table-wrap"><table class="table">
+      <thead><tr><th>POS order</th><th>Ordered</th><th>Status</th><th class="right">Amount</th></tr></thead><tbody>
+      ${posOrders.map((o) => html`<tr><td class="mono">${o.externalOrderId}<div class="sub">${o.outletName || o.restaurantId}</div></td>
+        <td class="nowrap">${dateTime(o.orderedAt)}</td>
+        <td>${badge(o.status, POS_STATUS_TEXT[o.status])}${o.status === "ALREADY_PAID" ? html`<div class="sub">Not billed to the room</div>` : ""}${o.needsAdjustment ? html`<div><span class="badge badge-red plain">Voided after billing</span></div>` : ""}</td>
+        <td class="num">${money(o.total)}</td></tr>`)}
+    </tbody></table></div></div></div>`;
+}
 
 function actionPanel() {
   const bill = s.bill;
@@ -93,7 +119,7 @@ function render() {
     root,
     html`<div class="card">${lifecycleStepper(r, s, s.bill)}</div>
     <div class="grid grid-main" id="detail-grid">
-      <div class="stack">${actionPanel()}${billCard()}${paymentsCard()}</div>
+      <div class="stack">${posPendingNotice()}${actionPanel()}${billCard()}${posOrdersCard()}${paymentsCard()}</div>
       <div class="stack">
         <div class="card"><div class="card-head"><h2>Stay</h2>${badge(s.status)}</div><div class="card-body"><dl class="dl">
           <dt>Guest</dt><dd><a href="/guests/${r.guest.id}">${r.guest.fullName}</a></dd>
@@ -112,6 +138,7 @@ function render() {
 async function load() {
   try {
     s = await api.get(`/stays/${id}`);
+    posOrders = await api.get("/pos-orders", { reservationId: s.reservationId, limit: 100 }).catch(() => []);
     render();
   } catch (err) {
     setHTML(root, errorHTML(err));

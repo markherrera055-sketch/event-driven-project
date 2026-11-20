@@ -90,9 +90,20 @@ POST /api/v1/verifications
 |---|---|---|---|
 | POST | `/bills` | R | `{ "stayId": 1 }`: generate or recalculate the DRAFT final bill; returns the folio |
 | POST | `/bills/{id}/adjustments` | R | `{ "amount": "-500.00", "reason": "Rate correction" }` (DRAFT only) |
-| POST | `/bills/{id}/confirm` | R | DRAFT → CONFIRMED (bill frozen, ready for payment) |
+| POST | `/bills/{id}/confirm` | R | DRAFT → CONFIRMED (bill frozen, ready for payment). 409 `POS_ORDERS_PENDING` while restaurant purchases for the stay's reservation await review |
 | GET | `/bills/{id}/totals` | R/A | `{ roomCharge, chargesTotal, adjustmentsTotal, totalDue }` from `v_bill_total` |
 | GET | `/bills/{id}/payments` | R/A | All payment attempts |
+
+### Restaurant charges (purchases notified by the Restaurant POS; see [POS_ORDERS.md](POS_ORDERS.md))
+
+| Method | Path | Role | Description |
+|---|---|---|---|
+| GET | `/pos-orders` | R/A | Paged list. Query: `status` (`OPEN` = awaiting review, or `PENDING_REVIEW`, `NEEDS_GUEST_VERIFICATION`, `ADDED_TO_FOLIO`, `REJECTED`, `ALREADY_PAID`), `search` (POS order id, customer, room, reservation code), `reservationId`, `needsAdjustment`, `page`, `limit` |
+| GET | `/pos-orders/summary` | R/A | Badge counts only: `{ pendingReview, needsVerification, open, needsAdjustment, attention, latestOpenId }` |
+| GET | `/pos-orders/{id}` | R/A | Purchase detail (customer, references, items, totals, `matchIssues`, matched reservation, reviewer) + `candidates` (in-house stays matching reservation / room / name) while open |
+| POST | `/pos-orders/{id}/approve` | R | `{ "stayId": 5, "note": "…" }`: posts the purchase to that stay's folio as an outstanding charge → `ADDED_TO_FOLIO`. `note` (3–255) required for `NEEDS_GUEST_VERIFICATION` or a stay other than the suggested one. 409 `ORDER_ALREADY_REVIEWED`, `STAY_NOT_IN_HOUSE`, `FOLIO_CLOSED`, `DUPLICATE_TRANSACTION` |
+| POST | `/pos-orders/{id}/reject` | R | `{ "reason": "…" }` → `REJECTED`; never billed; the POS is notified |
+| POST | `/pos-orders/{id}/resolve-void` | R | Marks a purchase voided by the POS after billing as handled (after the bill was corrected) |
 
 ### Payments, receipts, checkout (8.0, 9.0)
 

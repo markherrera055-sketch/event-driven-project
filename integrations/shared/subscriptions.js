@@ -5,7 +5,8 @@
  *
  * Default subscriptions (override per system with <SYSTEM>_WEBHOOK_EVENTS):
  *   BOOKING       reservation lifecycle of bookings IT created — never an echo of its own change
- *   POS           GuestCheckedIn / GuestCheckedOut (which rooms can be charged)
+ *   POS           GuestCheckedIn / GuestCheckedOut (which rooms can be charged),
+ *                 PosOrderReviewed (a purchase notification was added to the folio or rejected)
  *   HOUSEKEEPING  RoomVacated (create a cleaning task), RoomStatusChanged, RoomCleaned
  *   HR            none — HR pulls verified housekeeping task records (see integrations/hr)
  * A system only gets webhooks when its <SYSTEM>_WEBHOOK_URL is configured;
@@ -25,7 +26,7 @@ export const DEFAULT_SUBSCRIPTIONS = Object.freeze({
     // Only bookings that came from the Booking System, and not changes it made itself.
     filter: (payload) => payload.source === "BOOKING" && payload.origin !== "BOOKING",
   },
-  [OUTBOX_TARGETS.POS]: { events: [EVENTS.GUEST_CHECKED_IN, EVENTS.GUEST_CHECKED_OUT] },
+  [OUTBOX_TARGETS.POS]: { events: [EVENTS.GUEST_CHECKED_IN, EVENTS.GUEST_CHECKED_OUT, EVENTS.POS_ORDER_REVIEWED] },
   [OUTBOX_TARGETS.HOUSEKEEPING]: { events: [EVENTS.ROOM_VACATED, EVENTS.ROOM_STATUS_CHANGED, EVENTS.ROOM_CLEANED] },
 });
 

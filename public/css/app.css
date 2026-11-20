@@ -622,3 +622,28 @@ ul.notes li { margin-bottom: 6px; }
   .room-compare { grid-template-columns: minmax(0, 1fr); }
   .room-compare .arrow { transform: rotate(90deg); justify-self: center; }
 }
+
+/* ── Restaurant charges (POS purchase notifications) ──────────────────── */
+.nav-count { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: var(--radius-pill); background: var(--accent); color: var(--color-white); font-size: 11px; font-weight: 700; line-height: 20px; text-align: center; font-variant-numeric: tabular-nums; }
+.nav-count.danger, .notify-count.danger { background: var(--danger); }
+.notify-bell { position: relative; display: grid; place-items: center; width: 36px; height: 36px; border-radius: 50%; color: var(--text-2); border: 1px solid transparent; transition: background var(--ease), color var(--ease), border-color var(--ease); }
+.notify-bell:hover { background: var(--surface-sunken); color: var(--text); text-decoration: none; }
+.notify-bell.has-items { color: var(--text); border-color: var(--border); }
+.notify-bell svg { width: 18px; height: 18px; }
+.notify-count { position: absolute; top: -3px; right: -4px; min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill); background: var(--accent); color: var(--color-white); font-size: 10.5px; font-weight: 700; line-height: 18px; text-align: center; border: 2px solid var(--surface); box-sizing: content-box; font-variant-numeric: tabular-nums; }
+.issue-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.pick-list { display: flex; flex-direction: column; gap: 8px; max-height: 280px; overflow-y: auto; }
+.pick-option { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); cursor: pointer; transition: border-color var(--ease), background var(--ease); }
+.pick-option:hover { border-color: var(--border-strong); }
+.pick-option:has(input:checked) { border-color: var(--primary); background: var(--color-soft-sage); }
+.pick-option input { width: auto; height: auto; margin: 0; }
+.pick-option .sub { color: var(--text-2); font-size: 12.5px; font-weight: 450; }
+.order-totals { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; margin: 10px 0 0 auto; max-width: 280px; font-variant-numeric: tabular-nums; }
+.order-totals dt { color: var(--text-2); }
+.order-totals dd { margin: 0; text-align: right; font-weight: 550; }
+.order-totals .grand { font-weight: 700; color: var(--text); border-top: 1px solid var(--border); padding-top: 6px; }
+@media (max-width: 560px) {
+  .notify-bell { width: 32px; height: 32px; }
+  .pick-option { grid-template-columns: auto minmax(0, 1fr); }
+  .pick-option > :last-child { grid-column: 2; }
+}

@@ -17,6 +17,8 @@ export const SCOPES = Object.freeze({
   ROOMS_READ: "rooms:read",
   HOUSEKEEPING_WRITE: "housekeeping:write",
   HOUSEKEEPING_TASKS_READ: "housekeeping_tasks:read",
+  POS_ORDERS_WRITE: "pos_orders:write",
+  POS_ORDERS_READ: "pos_orders:read",
 });
 
 export const CLIENTS = Object.freeze({
@@ -30,7 +32,7 @@ export const CLIENTS = Object.freeze({
     label: "Restaurant POS",
     member: 4,
     basePath: "/api/v1/integrations/pos",
-    scopes: [SCOPES.FOLIO_READ, SCOPES.ROOM_CHARGES_WRITE],
+    scopes: [SCOPES.FOLIO_READ, SCOPES.ROOM_CHARGES_WRITE, SCOPES.POS_ORDERS_WRITE, SCOPES.POS_ORDERS_READ],
   },
   HOUSEKEEPING: {
     label: "Housekeeping System",
