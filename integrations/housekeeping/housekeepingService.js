@@ -7,6 +7,11 @@
  *                        cleaning-completed  CLEANING (or DIRTY) → AVAILABLE, or RESERVED when a confirmed
  *                                            reservation is assigned; RoomCleaned is published.
  *
+ * A room that went into MAINTENANCE before it was cleaned still needs cleaning
+ * (rooms.cleaning_required). Tasks for it are accepted while it is under
+ * maintenance: they are recorded, the room stays MAINTENANCE, and a completion
+ * clears the cleaning requirement so the administrator can then end maintenance.
+ *
  * The PMS keeps only a reference to each task (housekeeping_tasks) — staff,
  * schedules and progress belong to the Housekeeping System. external_task_id
  * is unique, so the same completion can never be applied twice, and every
@@ -24,7 +29,7 @@ import {
 } from "../../models/index.js";
 import { AppError, conflict, validationError } from "../../utils/errors.js";
 import { withTransaction } from "../../services/tx.js";
-import { transition, makeReadyAfterCleaning, STATUS_REASON } from "../../services/roomStatusService.js";
+import { transition, finishCleaning, pendingCleaning, STATUS_REASON } from "../../services/roomStatusService.js";
 import { emit, EVENTS } from "../../services/domainEvents.js";
 import { roomCleanedData } from "../../services/eventPayloads.js";
 import { logger } from "../../utils/logger.js";
@@ -126,12 +131,13 @@ const assertTaskForRoom = (task, room) => {
   }
 };
 
-const assertAwaitingCleaning = (room) => {
-  if (!HOUSEKEEPING_ROOM_STATUSES.includes(room.status)) {
-    throw conflict("ROOM_NOT_AWAITING_CLEANING", `Room ${room.roomNumber} is ${room.status}; it is not waiting for cleaning.`, {
-      room_status: room.status,
-    });
-  }
+/** DIRTY / CLEANING, or under MAINTENANCE while cleaning is still pending. */
+const assertAwaitingCleaning = async (room, transaction) => {
+  if (HOUSEKEEPING_ROOM_STATUSES.includes(room.status)) return;
+  if (room.status === ROOM_STATUS.MAINTENANCE && (await pendingCleaning(room, transaction)).required) return;
+  throw conflict("ROOM_NOT_AWAITING_CLEANING", `Room ${room.roomNumber} is ${room.status}; it is not waiting for cleaning.`, {
+    room_status: room.status,
+  });
 };
 
 const assertNotFuture = (field, date) => {
@@ -154,14 +160,14 @@ export async function registerTask(input) {
     const room = await lockRoom(input, t);
     const existing = await findTask(input.external_task_id, t);
     if (existing) throw conflict("DUPLICATE_TASK", "This external_task_id was already registered.", taskView(existing, room));
-    assertAwaitingCleaning(room);
+    await assertAwaitingCleaning(room, t);
     const task = await createTask(room, input, T.OPEN, t);
     await emit(EVENTS.CLEANING_TASK_CREATED, { origin: "HOUSEKEEPING", room_id: room.id, room_number: room.roomNumber, external_task_id: task.externalTaskId }, { transaction: t });
     return taskView(task, room);
   });
 }
 
-/** CleaningStarted: DIRTY → CLEANING. */
+/** CleaningStarted: DIRTY → CLEANING (a room under maintenance that still needs cleaning stays MAINTENANCE). */
 export async function cleaningStarted(input) {
   assertNotFuture("started_at", input.started_at);
   return guarded(async (t) => {
@@ -171,18 +177,21 @@ export async function cleaningStarted(input) {
     if (task && task.status !== T.OPEN) {
       throw conflict("TASK_ALREADY_STARTED", `Task ${task.externalTaskId} is already ${task.status}.`, taskView(task, room));
     }
-    if (room.status !== ROOM_STATUS.DIRTY) {
+    const inMaintenance = room.status === ROOM_STATUS.MAINTENANCE && (await pendingCleaning(room, t)).required;
+    if (room.status !== ROOM_STATUS.DIRTY && !inMaintenance) {
       throw conflict("ROOM_NOT_AWAITING_CLEANING", `Room ${room.roomNumber} is ${room.status}; cleaning can only start on a DIRTY room.`, {
         room_status: room.status,
       });
     }
     task ??= await createTask(room, input, T.OPEN, t);
-    await transition(
-      room,
-      ROOM_STATUS.CLEANING,
-      { reason: STATUS_REASON.CLEANING_STARTED, source: STATUS_CHANGE_SOURCE.HOUSEKEEPING, reference: task.externalTaskId },
-      t
-    );
+    if (!inMaintenance) {
+      await transition(
+        room,
+        ROOM_STATUS.CLEANING,
+        { reason: STATUS_REASON.CLEANING_STARTED, source: STATUS_CHANGE_SOURCE.HOUSEKEEPING, reference: task.externalTaskId },
+        t
+      );
+    }
     await task.update(
       { status: T.IN_PROGRESS, startedAt: input.started_at || new Date(), startedBy: input.started_by, ...(input.remarks ? { remarks: input.remarks } : {}) },
       { transaction: t }
@@ -199,7 +208,9 @@ export async function cleaningStarted(input) {
 
 /**
  * CleaningCompleted: the room becomes ready (AVAILABLE / RESERVED) and
- * RoomCleaned is published. Refused when the room is not DIRTY / CLEANING,
+ * RoomCleaned is published. A room under MAINTENANCE that still needed cleaning
+ * stays MAINTENANCE; its cleaning requirement is cleared (finishCleaning).
+ * Refused when the room is not DIRTY / CLEANING (or MAINTENANCE awaiting cleaning),
  * when the task belongs to another room, or when this task was already
  * completed (duplicate delivery).
  */
@@ -215,14 +226,14 @@ export async function cleaningCompleted(input) {
     if (task?.status === T.SUPERSEDED) {
       throw conflict("TASK_SUPERSEDED", `Room ${room.roomNumber} was already marked clean at the front desk.`, taskView(task, room));
     }
-    assertAwaitingCleaning(room);
+    await assertAwaitingCleaning(room, t);
     if (task?.startedAt && input.completed_at < task.startedAt) {
       throw validationError({ completed_at: "Cannot be earlier than the time cleaning started." });
     }
 
     const previousStatus = room.status;
     task ??= await createTask(room, input, T.OPEN, t);
-    await makeReadyAfterCleaning(
+    await finishCleaning(
       room,
       { reason: STATUS_REASON.CLEANING_COMPLETED, source: STATUS_CHANGE_SOURCE.HOUSEKEEPING, reference: task.externalTaskId },
       t

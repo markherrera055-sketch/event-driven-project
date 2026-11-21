@@ -7,7 +7,7 @@ import { DataTypes } from "sequelize";
 import { sequelize } from "./db.js";
 import { User, ROLES } from "./userModel.js";
 import { Guest } from "./Guest.js";
-import { Room, ROOM_STATUS, ADMIN_SETTABLE_ROOM_STATUSES, READY_ROOM_STATUSES, HOUSEKEEPING_ROOM_STATUSES } from "./Room.js";
+import { Room, ROOM_STATUS, ADMIN_SETTABLE_ROOM_STATUSES, READY_ROOM_STATUSES, HOUSEKEEPING_ROOM_STATUSES, OCCUPANCY_STATUS, occupancyStatusOf } from "./Room.js";
 import { RoomType } from "./RoomType.js";
 import { RoomStatusLog, STATUS_CHANGE_SOURCE } from "./RoomStatusLog.js";
 import { HousekeepingTask, HOUSEKEEPING_TASK_STATUS } from "./HousekeepingTask.js";
@@ -27,6 +27,7 @@ import { ExternalRoomMapping, EXTERNAL_SYSTEMS } from "./ExternalRoomMapping.js"
 import { ExternalBooking, EXTERNAL_SYNC_STATUS } from "./ExternalBooking.js";
 import { PosOrder, POS_ORDER_STATUS, OPEN_POS_ORDER_STATUSES } from "./PosOrder.js";
 import { StaffNotification, StaffNotificationRead, NOTIFICATION_CATEGORY, PROBLEM_NOTIFICATION_CATEGORIES } from "./StaffNotification.js";
+import { RoomSyncJob, ROOM_SYNC_STATUS, ROOM_SYNC_TARGETS, OPEN_ROOM_SYNC_STATUSES } from "./RoomSyncJob.js";
 
 const restrict = { onDelete: "RESTRICT", onUpdate: "CASCADE" };
 
@@ -105,6 +106,9 @@ Room.hasMany(ExternalRoomMapping, { foreignKey: "roomId", as: "externalMappings"
 ExternalRoomMapping.belongsTo(Room, { foreignKey: "roomId", as: "room", ...restrict });
 ExternalRoomMapping.belongsTo(User, { foreignKey: "createdBy", as: "creator", ...restrict });
 
+// Room catalogue sync jobs (Frontdesk → OnlineBooking / RoomCare). No FK on room_id: the log outlives the room.
+RoomSyncJob.belongsTo(User, { foreignKey: "requestedBy", as: "requester", constraints: false });
+
 // Reservation 1 — 0..1 ExternalBooking (the external system's ids, quote and revision for a synced booking)
 Reservation.hasOne(ExternalBooking, { foreignKey: "reservationId", as: "externalBooking", ...restrict });
 ExternalBooking.belongsTo(Reservation, { foreignKey: "reservationId", as: "reservation", ...restrict });
@@ -160,6 +164,8 @@ const COLUMN_UPGRADES = [
   ["rooms", "status_changed_at", { type: DataTypes.DATE, allowNull: true }],
   ["integration_outbox", "integration_event_id", { type: DataTypes.INTEGER, allowNull: true }],
   ["integration_outbox", "last_response_status", { type: DataTypes.INTEGER, allowNull: true }],
+  ["integration_outbox", "last_response_body", { type: DataTypes.STRING(1000), allowNull: true }],
+  ["rooms", "cleaning_required", { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false }],
 ];
 
 const FOREIGN_KEY_UPGRADES = [
@@ -189,6 +195,21 @@ export async function upgradeSchema({ log = () => {} } = {}) {
       await qi.addColumn(table, column, spec);
       applied.push(`${table}.${column}`);
     }
+  }
+
+  // rooms.cleaning_required was just added: backfill it so no room that still needs cleaning
+  // can be made ready by ending maintenance. Rooms in housekeeping, rooms with an open cleaning
+  // task, and rooms that went into MAINTENANCE from DIRTY / CLEANING (latest maintenance entry).
+  if (applied.includes("rooms.cleaning_required")) {
+    await sequelize.query(
+      `UPDATE rooms r SET r.cleaning_required = 1
+        WHERE r.status IN ('DIRTY','CLEANING')
+           OR EXISTS (SELECT 1 FROM housekeeping_tasks t WHERE t.room_id = r.id AND t.status IN ('OPEN','IN_PROGRESS'))
+           OR (r.status = 'MAINTENANCE' AND EXISTS (
+                SELECT 1 FROM room_status_logs l
+                 WHERE l.room_id = r.id AND l.to_status = 'MAINTENANCE' AND l.from_status IN ('DIRTY','CLEANING')
+                   AND l.id = (SELECT MAX(l2.id) FROM room_status_logs l2 WHERE l2.room_id = r.id AND l2.to_status = 'MAINTENANCE')))`
+    );
   }
 
   // Room status lifecycle. Earlier versions stored VACANT / OCCUPIED / MAINTENANCE
@@ -277,6 +298,8 @@ export {
   ADMIN_SETTABLE_ROOM_STATUSES,
   READY_ROOM_STATUSES,
   HOUSEKEEPING_ROOM_STATUSES,
+  OCCUPANCY_STATUS,
+  occupancyStatusOf,
   RoomType,
   RoomStatusLog,
   STATUS_CHANGE_SOURCE,
@@ -318,4 +341,8 @@ export {
   StaffNotificationRead,
   NOTIFICATION_CATEGORY,
   PROBLEM_NOTIFICATION_CATEGORIES,
+  RoomSyncJob,
+  ROOM_SYNC_STATUS,
+  ROOM_SYNC_TARGETS,
+  OPEN_ROOM_SYNC_STATUSES,
 };

@@ -4,10 +4,19 @@
  * roomStatusService (the lifecycle state machine), never directly.
  *
  * Administrator status rules:
- *   → MAINTENANCE   from any status except OCCUPIED; not while a guest is due in tonight
- *   MAINTENANCE →   AVAILABLE ("ready": RESERVED if a confirmed reservation is assigned) or DIRTY (needs cleaning)
+ *   → MAINTENANCE   from any status except OCCUPIED; not while a guest is due in tonight.
+ *                   A DIRTY / CLEANING room keeps its cleaning requirement while under maintenance.
+ *   MAINTENANCE →   AVAILABLE ("ready": RESERVED if a confirmed reservation is assigned) — refused with
+ *                   ROOM_NEEDS_CLEANING while cleaning is pending (roomStatusService cleaning guard) —
+ *                   or DIRTY (needs cleaning)
  *   isActive true ⇄ false  (Inactive = out of inventory)
  * displayStatus = the stored status, or INACTIVE / DELETED for rooms out of inventory.
+ *
+ * Catalogue changes (create, edit, delete/archive, restore) publish RoomCreated /
+ * RoomUpdated / RoomArchived / RoomRestored inside the same transaction; the
+ * integration layer turns them into room sync jobs for OnlineBooking and RoomCare
+ * (integrations/roomSync). A room that is known to an external system (mapped, or
+ * already sent) is archived instead of deleted, so its external records stay valid.
  */
 import { Op, fn, col, UniqueConstraintError } from "sequelize";
 import {
@@ -15,6 +24,8 @@ import {
   RoomType,
   Reservation,
   HousekeepingTask,
+  ExternalRoomMapping,
+  RoomSyncJob,
   ROOM_STATUS,
   READY_ROOM_STATUSES,
   HOUSEKEEPING_ROOM_STATUSES,
@@ -26,9 +37,9 @@ import {
 import { conflict, notFound } from "../utils/errors.js";
 import { today } from "../utils/dates.js";
 import { assertRoomRemovable, lockRoomTypes, peekRoomType } from "./availabilityService.js";
-import { transition, readyStatusFor, lockRoomRow, makeReadyAfterCleaning, STATUS_REASON } from "./roomStatusService.js";
+import { transition, readyStatusFor, lockRoomRow, finishCleaning, pendingCleaning, STATUS_REASON } from "./roomStatusService.js";
 import { emit, EVENTS } from "./domainEvents.js";
-import { roomCleanedData } from "./eventPayloads.js";
+import { roomCleanedData, roomCatalogData } from "./eventPayloads.js";
 import { roomJSON } from "./serializers.js";
 import { withTransaction } from "./tx.js";
 import { logger } from "../utils/logger.js";
@@ -171,6 +182,14 @@ const guardUniqueNumber = async (save) => {
 
 const ROOM_FIELDS = ["roomNumber", "roomType", "floor", "capacity", "nightlyRate", "description", "amenities"];
 
+/** Catalogue fields whose requested value differs from the stored one. */
+const SAME = {
+  nightlyRate: (a, b) => Number(a) === Number(b),
+  amenities: (a, b) => JSON.stringify(a ?? []) === JSON.stringify(b ?? []),
+};
+const equalValues = (a, b) => (a ?? null) === (b ?? null);
+const changedFields = (room, update) => Object.keys(update).filter((key) => !(SAME[key] || equalValues)(room.get(key), update[key]));
+
 export async function createRoom(data, actor) {
   await assertNumberFree(data.roomNumber);
   const values = {
@@ -179,7 +198,13 @@ export async function createRoom(data, actor) {
   };
   for (const key of ROOM_FIELDS) if (data[key] !== undefined) values[key] = data[key];
   if (data.isActive !== undefined) values.isActive = data.isActive;
-  const room = await guardUniqueNumber(() => Room.create(values));
+  const room = await guardUniqueNumber(() =>
+    withTransaction(null, async (transaction) => {
+      const created = await Room.create(values, { transaction });
+      await emit(EVENTS.ROOM_CREATED, roomCatalogData(created, { changes: Object.keys(values), actor }), { transaction });
+      return created;
+    })
+  );
   logger.info("room_created", { roomId: room.id, roomNumber: room.roomNumber, by: actor?.id });
   return roomJSON(room);
 }
@@ -270,11 +295,14 @@ export async function updateRoom(id, changes, actor) {
 
     const update = {};
     for (const key of [...ROOM_FIELDS, "isActive"]) if (changes[key] !== undefined) update[key] = changes[key];
+    const changed = changedFields(room, update);
     await guardUniqueNumber(() => room.update(update, { transaction }));
     if (statusChanging) {
       const reason = targetStatus === ROOM_STATUS.MAINTENANCE ? STATUS_REASON.MAINTENANCE_STARTED : STATUS_REASON.MAINTENANCE_ENDED;
       await transition(room, targetStatus, { reason, source: STATUS_CHANGE_SOURCE.ADMIN, actor }, transaction);
+      changed.push("status");
     }
+    if (changed.length) await emit(EVENTS.ROOM_UPDATED, roomCatalogData(room, { changes: changed, actor }), { transaction });
     logger.info("room_updated", { roomId: room.id, fields: Object.keys(update), status: targetStatus || undefined, by: actor?.id });
     return {
       ...roomJSON(room),
@@ -288,8 +316,10 @@ export async function updateRoom(id, changes, actor) {
  * Deletes a room.
  *  - Refused while the room is occupied or holds any active reservation, or
  *    when the remaining rooms of its type could not honour existing bookings.
- *  - A room that was never booked is deleted permanently.
- *  - A room with past reservations is archived instead (soft delete): it
+ *  - A room that was never booked, and never sent to an external system, is
+ *    deleted permanently (room sync jobs that were never attempted go with it).
+ *  - A room with past reservations, or one known to OnlineBooking / RoomCare
+ *    (mapped, or already sent), is archived instead (soft delete): it
  *    leaves inventory and every list, while its reservations, stays, bills and
  *    receipts keep pointing at it. Its number stays reserved so history
  *    remains unambiguous; it can be restored.
@@ -311,39 +341,54 @@ export async function deleteRoom(id, actor) {
     if (room.isActive) await assertRoomRemovable(room, {}, transaction);
 
     const history = await Reservation.count({ where: { roomId: room.id }, transaction });
-    if (history === 0) {
+    const [mapped, sent] = await Promise.all([
+      ExternalRoomMapping.count({ where: { roomId: room.id }, transaction }),
+      RoomSyncJob.count({ where: { roomId: room.id, lastAttemptAt: { [Op.ne]: null } }, transaction }),
+    ]);
+    if (history === 0 && mapped === 0 && sent === 0) {
+      await RoomSyncJob.destroy({ where: { roomId: room.id }, transaction });
       await room.destroy({ transaction });
       logger.info("room_deleted", { roomId: room.id, roomNumber: room.roomNumber, by: actor?.id });
       return { mode: "deleted", room: roomJSON(room) };
     }
     await room.update({ isActive: false, archivedAt: new Date() }, { transaction });
-    logger.info("room_archived", { roomId: room.id, roomNumber: room.roomNumber, historicalReservations: history, by: actor?.id });
-    return { mode: "archived", historicalReservations: history, room: roomJSON(room) };
+    await emit(EVENTS.ROOM_ARCHIVED, roomCatalogData(room, { changes: ["archivedAt", "isActive"], actor }), { transaction });
+    logger.info("room_archived", { roomId: room.id, roomNumber: room.roomNumber, historicalReservations: history, externalSystems: mapped, by: actor?.id });
+    return { mode: "archived", historicalReservations: history, externalSystems: mapped, room: roomJSON(room) };
   });
 }
 
 /** Brings an archived ("deleted") room back into service. */
 export async function restoreRoom(id, actor) {
-  const room = await Room.findByPk(id);
-  if (!room || !room.archivedAt) throw notFound("Deleted room");
-  await room.update({ archivedAt: null, isActive: true });
+  const room = await withTransaction(null, async (transaction) => {
+    const found = await Room.findByPk(id, { transaction, lock: transaction.LOCK.UPDATE });
+    if (!found || !found.archivedAt) throw notFound("Deleted room");
+    await found.update({ archivedAt: null, isActive: true }, { transaction });
+    await emit(EVENTS.ROOM_RESTORED, roomCatalogData(found, { changes: ["archivedAt", "isActive"], actor }), { transaction });
+    return found;
+  });
   logger.info("room_restored", { roomId: room.id, by: actor?.id });
   return roomJSON(room);
 }
 
 /**
  * Front-desk fallback for when the Housekeeping System cannot report back:
- * DIRTY / CLEANING → ready. Any open housekeeping task for the room is marked
- * SUPERSEDED, and RoomCleaned is published so Housekeeping can close its task.
+ * DIRTY / CLEANING → ready. A room under MAINTENANCE that still needs cleaning
+ * stays under maintenance; only its cleaning requirement is cleared. Any open
+ * housekeeping task for the room is marked SUPERSEDED (this explicit staff
+ * action is the verification), and RoomCleaned is published so Housekeeping
+ * can close its task.
  */
 export async function markClean(roomId, actor) {
   await withTransaction(null, async (transaction) => {
     const room = await lockRoomRow(roomId, transaction);
-    if (!HOUSEKEEPING_ROOM_STATUSES.includes(room.status)) {
+    const awaiting =
+      HOUSEKEEPING_ROOM_STATUSES.includes(room.status) || (room.status === ROOM_STATUS.MAINTENANCE && (await pendingCleaning(room, transaction)).required);
+    if (!awaiting) {
       throw conflict("ALREADY_CLEAN", `Room ${room.roomNumber} does not need cleaning (status ${room.status}).`);
     }
     const now = new Date();
-    await makeReadyAfterCleaning(room, { reason: STATUS_REASON.MANUAL_CLEAN, source: STATUS_CHANGE_SOURCE.FRONT_DESK, actor }, transaction);
+    await finishCleaning(room, { reason: STATUS_REASON.MANUAL_CLEAN, source: STATUS_CHANGE_SOURCE.FRONT_DESK, actor }, transaction);
     await room.update({ lastCleanedAt: now, lastCleanedBy: actor.id }, { transaction });
     await HousekeepingTask.update(
       { status: HOUSEKEEPING_TASK_STATUS.SUPERSEDED, remarks: `Marked clean at the front desk by ${actor.fullName || `user ${actor.id}`}` },

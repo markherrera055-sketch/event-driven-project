@@ -4,14 +4,15 @@
  *
  *   requireHttps        refuse plain HTTP when INTEGRATION_REQUIRE_HTTPS (default on in production)
  *   authenticate        API key → which system is calling (X-Api-Key or Authorization: Bearer)
- *   requireSignedWrites HMAC signature + timestamp window on writes, for systems with an inbound secret
+ *   requireSignedWrites HMAC signature + timestamp window on writes, for systems with an inbound secret;
+ *                       systems that MUST sign (Housekeeping) get 503 on writes while their secret is missing
  *   requireScope(s)     the calling system must hold scope s (per-route authorization)
  */
 import crypto from "crypto";
 import { config } from "../../config/index.js";
 import { fail } from "../../utils/http.js";
 import { logger } from "../../utils/logger.js";
-import { CLIENTS, clientSettings } from "./clients.js";
+import { CLIENTS, clientSettings, signingSecretMissing } from "./clients.js";
 import { verifySignature } from "./signature.js";
 
 const digest = (value) => crypto.createHash("sha256").update(String(value)).digest();
@@ -47,10 +48,24 @@ export const authenticate = (req, res, next) => {
   next();
 };
 
-/** When the calling system has an inbound secret, every write must be signed (see signature.js). */
+/**
+ * When the calling system has an inbound secret, every write must be signed (see signature.js).
+ * A system that must sign (CLIENTS[x].inboundSigningRequired) but has no secret configured is
+ * refused outright (fail closed) — except under NODE_ENV=test (config.integrations.enforceRequiredSigning).
+ */
 export const requireSignedWrites = (req, res, next) => {
   if (!["POST", "PUT", "PATCH", "DELETE"].includes(req.method)) return next();
-  const secret = clientSettings(req.integration.source).inboundSecret;
+  const { source } = req.integration;
+  const secret = clientSettings(source).inboundSecret;
+  if (!secret && signingSecretMissing(source)) {
+    logger.error("integration_signing_secret_missing", { source, path: req.originalUrl, variable: `${source}_INBOUND_SECRET` });
+    return fail(
+      res,
+      503,
+      "INBOUND_SIGNING_NOT_CONFIGURED",
+      "Signed requests are required for this system, but the PMS has no signing secret configured for it. Writes are refused until the PMS administrator configures it."
+    );
+  }
   if (!secret) return next();
   const error = verifySignature({
     secret,

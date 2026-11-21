@@ -24,6 +24,8 @@ export const IntegrationOutbox = sequelize.define(
     nextAttemptAt: { type: DataTypes.DATE, allowNull: false, defaultValue: DataTypes.NOW },
     lastError: { type: DataTypes.STRING(500), allowNull: true },
     lastResponseStatus: { type: DataTypes.INTEGER, allowNull: true },
+    // First 1000 characters of the receiver's answer (e.g. RoomCare's task id), for the admin console.
+    lastResponseBody: { type: DataTypes.STRING(1000), allowNull: true },
     sentAt: { type: DataTypes.DATE, allowNull: true },
   },
   { tableName: "integration_outbox", indexes: [{ fields: ["status", "next_attempt_at"] }] }

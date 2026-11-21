@@ -34,7 +34,9 @@ import {
   RESERVATION_SOURCE,
   RESERVATION_STATUS,
   ROOM_STATUS,
+  READY_ROOM_STATUSES,
   NOTIFICATION_CATEGORY,
+  occupancyStatusOf,
 } from "../../models/index.js";
 import { AppError, conflict, validationError } from "../../utils/errors.js";
 import { withTransaction } from "../../services/tx.js";
@@ -647,5 +649,42 @@ export async function availableRooms({ check_in: checkInDate, check_out: checkOu
     currency: config.hotel.currency,
     rooms,
     unavailable_rooms: unavailable,
+  };
+}
+
+/**
+ * Room sync (pull): current state of every mapped room, so StayBook can show
+ * whether a room is ready right now. A room is ready_for_guest only when it is
+ * in service and clean (VACANT_CLEAN): after a checkout it stays VACANT_DIRTY
+ * until RoomCare confirms the cleaning (or the front desk marks it clean).
+ */
+export async function mappedRoomStates() {
+  const mappings = await ExternalRoomMapping.findAll({ where: { sourceSystem: SYSTEM }, include: ["room"] });
+  return {
+    hotel_id: toId(config.integrations.staybook.hotelId),
+    currency: config.hotel.currency,
+    generated_at: new Date().toISOString(),
+    rooms: mappings
+      .filter((m) => m.room)
+      .sort((a, b) => a.room.roomNumber.localeCompare(b.room.roomNumber, undefined, { numeric: true }))
+      .map(({ externalRoomId, room }) => {
+        const inService = !!room.isActive && !room.archivedAt;
+        return {
+          staybook_room_id: toId(externalRoomId),
+          frontdesk_room_id: room.id,
+          room_number: room.roomNumber,
+          room_type: room.roomType,
+          capacity: room.capacity,
+          nightly_rate: amount(room.nightlyRate),
+          description: room.description ?? null,
+          amenities: Array.isArray(room.amenities) ? room.amenities : [],
+          in_service: inService,
+          room_status: room.status,
+          occupancy_status: occupancyStatusOf(room.status),
+          ready_for_guest: inService && READY_ROOM_STATUSES.includes(room.status),
+          last_cleaned_at: room.lastCleanedAt ?? null,
+          status_changed_at: room.statusChangedAt ?? null,
+        };
+      }),
   };
 }

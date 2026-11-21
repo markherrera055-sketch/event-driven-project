@@ -39,6 +39,9 @@ export const CLIENTS = Object.freeze({
     member: 3,
     basePath: "/api/v1/integrations/housekeeping",
     scopes: [SCOPES.ROOMS_READ, SCOPES.HOUSEKEEPING_WRITE],
+    // Its callbacks change room status: HOUSEKEEPING_INBOUND_SECRET is mandatory outside tests
+    // (auth.js requireSignedWrites refuses writes when it is missing).
+    inboundSigningRequired: true,
   },
   HR: {
     label: "HR and Payroll System",
@@ -49,6 +52,10 @@ export const CLIENTS = Object.freeze({
 });
 
 export const clientSettings = (source) => config.integrations.clients[source] || {};
+
+/** The system must sign its writes, but no inbound secret is configured: its writes are refused. */
+export const signingSecretMissing = (source) =>
+  !!CLIENTS[source]?.inboundSigningRequired && config.integrations.enforceRequiredSigning && !clientSettings(source).inboundSecret;
 
 /** Non-secret status of every integration, for the admin console. */
 export const clientStatus = () =>
@@ -62,6 +69,8 @@ export const clientStatus = () =>
       scopes: c.scopes,
       enabled: !!s.apiKey,
       inboundSigned: !!s.inboundSecret,
+      inboundSigningRequired: !!c.inboundSigningRequired,
+      inboundSecretMissing: signingSecretMissing(source),
       webhookConfigured: !!s.webhookUrl,
       webhookSigned: !!s.webhookSecret,
     };

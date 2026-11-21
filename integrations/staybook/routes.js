@@ -7,6 +7,7 @@
  * BOOKING_API_KEY (X-Api-Key or Authorization: Bearer) and its scopes.
  * Writes require an Idempotency-Key header (shared integration pipeline).
  *
+ *   GET   /rooms                                                  current state of every mapped room (status, cleaning, ready_for_guest)
  *   GET   /rooms/available?check_in&check_out&guests[&hotel_id]   mapped rooms bookable for the stay
  *   POST  /reservations                                            receive a new online booking
  *   GET   /reservations/{id}                                       acknowledgment / current state
@@ -72,6 +73,8 @@ const reported = (operation, handler) =>
 router.param("id", (req, res, next, id) =>
   /^[A-Za-z0-9._:-]{1,100}$/.test(id) ? next() : fail(res, 404, "RESERVATION_NOT_FOUND", "Unknown reservation id or booking reference.")
 );
+
+router.get("/rooms", read, asyncHandler(async (req, res) => ok(res, await staybook.mappedRoomStates())));
 
 router.get(
   "/rooms/available",

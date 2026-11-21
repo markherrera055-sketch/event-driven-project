@@ -2,10 +2,12 @@
 import { asyncHandler, ok, created } from "../../utils/http.js";
 import { validate, v } from "../../utils/validate.js";
 import { notFound } from "../../utils/errors.js";
-import { ROLES, OUTBOX_STATUS, IntegrationRequest, ADMIN_SETTABLE_ROOM_STATUSES } from "../../models/index.js";
+import { ROLES, OUTBOX_STATUS, OUTBOX_TARGETS, IntegrationRequest, ADMIN_SETTABLE_ROOM_STATUSES, ROOM_SYNC_STATUS, ROOM_SYNC_TARGETS } from "../../models/index.js";
 import * as rooms from "../../services/roomService.js";
 import * as staff from "../../services/staffService.js";
-import { listOutbox, retryOutboxEvent, processOutbox } from "../../integrations/shared/outbox.js";
+import { listOutbox, retryOutboxEvent, processOutbox, outboxHealth } from "../../integrations/shared/outbox.js";
+import * as roomSync from "../../integrations/roomSync/roomSyncService.js";
+import { cleaningNotifications as cleaningLog } from "../../integrations/housekeeping/cleaningMonitor.js";
 import { integrationStatus } from "../../integrations/index.js";
 import * as staybookRooms from "../../integrations/staybook/roomMappings.js";
 import { staybookSyncIssues as syncIssues } from "../../services/onlineReservationService.js";
@@ -100,4 +102,34 @@ export const retryOutbox = asyncHandler(async (req, res) => {
   if (!row) throw notFound("Outbox event");
   await processOutbox();
   ok(res, await row.reload());
+});
+
+/**
+ * Integration monitoring (Admin Console → Integrations → Room synchronisation):
+ * OnlineBooking / RoomCare room sync status per system, the job history, and
+ * the webhook health of both systems (StayBook = BOOKING, RoomCare = HOUSEKEEPING).
+ */
+export const roomSyncMonitor = asyncHandler(async (req, res) => {
+  const q = validate(req.query, {
+    target: v.enum(Object.values(ROOM_SYNC_TARGETS)),
+    status: v.enum(Object.values(ROOM_SYNC_STATUS)),
+    roomId: v.int({ min: 1 }),
+  });
+  const [overview, jobs, bookingWebhooks, roomcareWebhooks] = await Promise.all([
+    roomSync.roomSyncOverview(),
+    roomSync.listRoomSyncJobs({ ...q, limit: 50 }),
+    outboxHealth(OUTBOX_TARGETS.BOOKING),
+    outboxHealth(OUTBOX_TARGETS.HOUSEKEEPING),
+  ]);
+  ok(res, { ...overview, jobs, webhooks: { STAYBOOK: bookingWebhooks, ROOMCARE: roomcareWebhooks } });
+});
+export const retryRoomSync = asyncHandler(async (req, res) => ok(res, await roomSync.retryRoomSyncJob(Number(req.params.id))));
+export const resyncRooms = asyncHandler(async (req, res) => {
+  const { target } = validate(req.body, { target: v.enum(Object.values(ROOM_SYNC_TARGETS), { required: true }) });
+  ok(res, await roomSync.resyncAllRooms(target, req.user));
+});
+/** Checkout → RoomCare cleaning notifications, their delivery, and the task status RoomCare reported. */
+export const cleaningNotifications = asyncHandler(async (req, res) => {
+  const [roomcare, notifications] = await Promise.all([outboxHealth(OUTBOX_TARGETS.HOUSEKEEPING), cleaningLog({ limit: 50 })]);
+  ok(res, { roomcare, notifications });
 });

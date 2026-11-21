@@ -12,11 +12,17 @@
  *
  * Pipeline for every request:
  *   HTTPS check → per-IP limit → API key (who is calling) → per-system limit
- *   → signature (systems with an inbound secret, writes) → Idempotency-Key (writes)
+ *   → signature (systems with an inbound secret, writes; Housekeeping writes are refused
+ *     with 503 while HOUSEKEEPING_INBOUND_SECRET is missing, except under NODE_ENV=test)
+ *   → Idempotency-Key (writes)
  *   → route: scope check (what the caller may do) → validation → service
  *
  * The core never imports this folder: core services raise domain events, and
  * subscriptions.js turns them into logged events and webhook deliveries.
+ *
+ * Outbound room sync (roomSync/): room catalogue changes are queued per
+ * receiving system (OnlineBooking / RoomCare) and sent through per-system
+ * adapters by their own worker (docs/ROOM_SYNC.md).
  */
 import express from "express";
 import { config } from "../config/index.js";
@@ -26,12 +32,14 @@ import { requireHttps, authenticate, requireSignedWrites } from "./shared/auth.j
 import { idempotent } from "./shared/idempotency.js";
 import { registerIntegrationSubscriptions, subscribedEvents } from "./shared/subscriptions.js";
 import { startOutboxWorker } from "./shared/outbox.js";
-import { clientStatus, clientSettings } from "./shared/clients.js";
+import { CLIENTS, clientStatus, clientSettings, signingSecretMissing } from "./shared/clients.js";
+import { logger } from "../utils/logger.js";
 import bookingRoutes from "./booking/routes.js";
 import posRoutes from "./pos/routes.js";
 import housekeepingRoutes from "./housekeeping/routes.js";
 import hrRoutes from "./hr/routes.js";
 import staybookRoutes from "./staybook/routes.js";
+import { registerRoomSync, startRoomSyncWorker } from "./roomSync/roomSyncService.js";
 
 export function integrationRouter() {
   const router = express.Router();
@@ -54,8 +62,17 @@ export function integrationRouter() {
 
 /** Wire domain events to the event log / outbox and start webhook delivery. */
 export function startIntegrations({ worker = true } = {}) {
+  for (const source of Object.keys(CLIENTS)) {
+    if (clientSettings(source).apiKey && signingSecretMissing(source)) {
+      logger.error("integration_signing_secret_missing", { source, variable: `${source}_INBOUND_SECRET`, effect: "writes from this system are refused (503) until it is set" });
+    }
+  }
   registerIntegrationSubscriptions();
-  if (worker) startOutboxWorker();
+  registerRoomSync();
+  if (worker) {
+    startOutboxWorker();
+    startRoomSyncWorker();
+  }
 }
 
 /** Non-secret configuration status for the admin console. */

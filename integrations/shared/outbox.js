@@ -14,7 +14,7 @@
  *   X-PMS-Delivery: <outbox id>      X-PMS-Timestamp: <unix seconds>
  *   X-PMS-Signature: sha256=<hex HMAC-SHA256(secret, `${timestamp}.${rawBody}`)>
  */
-import { QueryTypes } from "sequelize";
+import { Op, QueryTypes } from "sequelize";
 import { sequelize, IntegrationOutbox, OUTBOX_STATUS, OUTBOX_TARGETS } from "../../models/index.js";
 import { config } from "../../config/index.js";
 import { logger } from "../../utils/logger.js";
@@ -52,6 +52,7 @@ async function deliver(row) {
   if (webhookSecret) headers["X-PMS-Signature"] = signPayload(webhookSecret, timestamp, rawBody);
 
   let status = null;
+  let responseBody = null;
   try {
     const response = await fetch(webhookUrl, {
       method: "POST",
@@ -60,8 +61,10 @@ async function deliver(row) {
       signal: AbortSignal.timeout(config.integrations.webhookTimeoutMs),
     });
     status = response.status;
+    // The receiver's answer (e.g. RoomCare's cleaning task id), kept for the admin console.
+    responseBody = (await response.text().catch(() => "")).slice(0, 1000) || null;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    await row.update({ status: OUTBOX_STATUS.SENT, attempts, sentAt: new Date(), lastError: null, lastResponseStatus: status });
+    await row.update({ status: OUTBOX_STATUS.SENT, attempts, sentAt: new Date(), lastError: null, lastResponseStatus: status, lastResponseBody: responseBody });
     logger.info("webhook_sent", { id: row.id, target: row.target, event: row.eventType, eventId: row.payload?.event_id });
   } catch (err) {
     const exhausted = attempts >= config.integrations.outboxMaxAttempts;
@@ -71,6 +74,7 @@ async function deliver(row) {
       nextAttemptAt: new Date(Date.now() + backoffMs(attempts)),
       lastError: String(err.message).slice(0, 500),
       lastResponseStatus: status,
+      lastResponseBody: responseBody,
     });
     logger.warn("webhook_failed", { id: row.id, target: row.target, attempts, exhausted, error: err.message });
     // StayBook bookings: tell the front desk that StayBook was not updated (Synchronization Failed).
@@ -131,6 +135,7 @@ export async function listOutbox({ status, limit = 50 } = {}) {
     attempts: r.attempts,
     lastError: r.lastError,
     lastResponseStatus: r.lastResponseStatus,
+    lastResponseBody: r.lastResponseBody,
     nextAttemptAt: r.nextAttemptAt,
     sentAt: r.sentAt,
     createdAt: r.createdAt,
@@ -143,4 +148,31 @@ export async function retryOutboxEvent(id) {
   if (!row) return null;
   await row.update({ status: OUTBOX_STATUS.PENDING, attempts: 0, nextAttemptAt: new Date(), lastError: null });
   return row;
+}
+
+/**
+ * Webhook delivery health of one receiving system, from real deliveries:
+ * NOT_CONFIGURED (no URL) · UNKNOWN (nothing delivered yet) · CONNECTED (last attempt 2xx) · ERROR.
+ */
+export async function outboxHealth(target) {
+  const configured = !!clientSettings(target).webhookUrl;
+  const [last, lastSent, pending, failed] = await Promise.all([
+    IntegrationOutbox.findOne({ where: { target, attempts: { [Op.gt]: 0 } }, order: [["updatedAt", "DESC"], ["id", "DESC"]] }),
+    IntegrationOutbox.max("sentAt", { where: { target } }),
+    IntegrationOutbox.count({ where: { target, status: OUTBOX_STATUS.PENDING } }),
+    IntegrationOutbox.count({ where: { target, status: OUTBOX_STATUS.FAILED } }),
+  ]);
+  let connection = "UNKNOWN";
+  if (!configured) connection = "NOT_CONFIGURED";
+  else if (last) connection = last.status === OUTBOX_STATUS.SENT ? "CONNECTED" : "ERROR";
+  return {
+    target,
+    configured,
+    connection,
+    lastSuccessAt: lastSent ?? null,
+    lastAttemptAt: last?.updatedAt ?? null,
+    lastError: last && last.status !== OUTBOX_STATUS.SENT ? last.lastError : null,
+    pending,
+    failed,
+  };
 }

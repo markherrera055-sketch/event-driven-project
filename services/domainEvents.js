@@ -37,7 +37,15 @@ export const EVENTS = Object.freeze({
   ROOM_CHARGE_POSTED: "RoomChargePosted",
   GUEST_FOLIO_UPDATED: "GuestFolioUpdated",
   POS_ORDER_REVIEWED: "PosOrderReviewed",
+  // Room catalogue (Admin Console → Rooms). Drive room synchronisation to OnlineBooking / RoomCare.
+  ROOM_CREATED: "RoomCreated",
+  ROOM_UPDATED: "RoomUpdated",
+  ROOM_ARCHIVED: "RoomArchived",
+  ROOM_RESTORED: "RoomRestored",
 });
+
+/** Events that change the room catalogue (what OnlineBooking / RoomCare keep a copy of). */
+export const ROOM_CATALOG_EVENTS = Object.freeze([EVENTS.ROOM_CREATED, EVENTS.ROOM_UPDATED, EVENTS.ROOM_ARCHIVED, EVENTS.ROOM_RESTORED]);
 
 /** Which record an event is about (used for the event log index). */
 export const EVENT_AGGREGATE = Object.freeze({
@@ -55,4 +63,8 @@ export const EVENT_AGGREGATE = Object.freeze({
   RoomChargePosted: ["STAY", "stay_id"],
   GuestFolioUpdated: ["STAY", "stay_id"],
   PosOrderReviewed: ["POS_ORDER", "pos_order_id"],
+  RoomCreated: ["ROOM", "room_id"],
+  RoomUpdated: ["ROOM", "room_id"],
+  RoomArchived: ["ROOM", "room_id"],
+  RoomRestored: ["ROOM", "room_id"],
 });

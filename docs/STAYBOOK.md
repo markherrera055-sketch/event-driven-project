@@ -7,7 +7,7 @@ Guest books on StayBook ──► StayBook saves booking (LOCAL_CONFIRMED, simul
                               │  backend → POST /api/v1/integrations/staybook/reservations
                               │  X-Api-Key + Idempotency-Key, JSON
                               ▼
-                     Frontdesk: API key → rate limit → idempotency → validation
+                     Fronctdesk: API key → rate limit → idempotency → validation
                               │  hotel_id ok? staybook_room_id mapped? dates / nights / guests / currency ok?
                               │  one DB transaction, room rows locked (no double booking):
                               │    guest found or created → CONFIRMED reservation of the mapped room → room RESERVED
@@ -65,6 +65,7 @@ Base URL: `https://<frontdesk-host>/api/v1/integrations/staybook`
 
 | Method | Path | Scope | Purpose |
 |---|---|---|---|
+| GET | `/rooms` | `reservations:read` | Current state of every mapped room: `room_status`, `occupancy_status` (`VACANT_CLEAN` / `VACANT_DIRTY` / `OCCUPIED` / `OUT_OF_ORDER`), `ready_for_guest`, `last_cleaned_at` ([ROOM_SYNC.md](ROOM_SYNC.md)) |
 | GET | `/rooms/available?check_in&check_out&guests[&hotel_id]` | `reservations:read` | Mapped rooms bookable for the stay (authoritative: includes walk-ins, in-house guests, maintenance) |
 | POST | `/reservations` | `reservations:write` | Receive a new online booking |
 | GET | `/reservations/{id}` | `reservations:read` | Acknowledgment / current Frontdesk state |

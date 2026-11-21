@@ -3,6 +3,7 @@
  * idempotency, HMAC request signatures with a replay window, HTTPS enforcement.
  * The member systems are simulated with IntegrationClient (no other app needs to run).
  */
+import { jest } from "@jest/globals";
 import { resetDatabase, startApp, StaffClient, IntegrationClient, PASSWORDS, newKey } from "./helpers/harness.js";
 import { config } from "../config/index.js";
 import { signPayload, verifySignature } from "../integrations/shared/signature.js";
@@ -189,5 +190,96 @@ describe("Transport", () => {
     } finally {
       config.integrations.requireHttps = false;
     }
+  });
+});
+
+describe("Housekeeping signing is mandatory outside the test environment", () => {
+  const settings = () => config.integrations.clients.HOUSEKEEPING;
+
+  /** Simulates a non-test deployment whose .env lacks HOUSEKEEPING_INBOUND_SECRET. */
+  async function withoutSecret(enforce, fn) {
+    const saved = { secret: settings().inboundSecret, enforce: config.integrations.enforceRequiredSigning };
+    settings().inboundSecret = "";
+    config.integrations.enforceRequiredSigning = enforce;
+    try {
+      await fn();
+    } finally {
+      settings().inboundSecret = saved.secret;
+      config.integrations.enforceRequiredSigning = saved.enforce;
+    }
+  }
+
+  test("enforcement is on in every NODE_ENV except test", async () => {
+    const { execFileSync } = await import("child_process");
+    const { pathToFileURL } = await import("url");
+    const configUrl = pathToFileURL(`${config.rootDir}/config/index.js`).href;
+    const enforcedUnder = (nodeEnv) => {
+      const env = { ...process.env, ENV_FILE: "__no_env_file__", SESSION_SECRET: "x".repeat(40) };
+      if (nodeEnv === undefined) delete env.NODE_ENV;
+      else env.NODE_ENV = nodeEnv;
+      const script = `const { config } = await import(${JSON.stringify(configUrl)}); process.stdout.write(String(config.integrations.enforceRequiredSigning));`;
+      return execFileSync(process.execPath, ["--input-type=module", "-e", script], { env, encoding: "utf8" }).trim();
+    };
+    expect(enforcedUnder(undefined)).toBe("true");
+    expect(enforcedUnder("development")).toBe("true");
+    expect(enforcedUnder("production")).toBe("true");
+    expect(enforcedUnder("staging")).toBe("true");
+    expect(enforcedUnder("test")).toBe("false");
+  });
+
+  test("without HOUSEKEEPING_INBOUND_SECRET every Housekeeping write is refused (503), signed or not, and nothing is stored", async () => {
+    const logged = jest.spyOn(console, "error").mockImplementation(() => {});
+    let calls = [];
+    await withoutSecret(true, async () => {
+      const unsigned = new IntegrationClient(app.base, "housekeeping", process.env.HOUSEKEEPING_API_KEY);
+      const before = await IntegrationRequest.count();
+      const calls = [
+        [unsigned, "/cleaning-status", { status: "PENDING", external_task_id: "HK-NOSECRET-1", room_number: "101" }],
+        [unsigned, "/cleaning-completed", { external_task_id: "HK-NOSECRET-2", room_number: "101", status: "COMPLETED", completed_by: "EMP-1", completed_at: new Date().toISOString() }],
+        [housekeeping, "/cleaning-started", { external_task_id: "HK-NOSECRET-3", room_number: "101", started_by: "EMP-1" }], // signed with the old secret
+      ];
+      for (const [client, path, body] of calls) {
+        const res = await client.post(path, body);
+        expect(res.status).toBe(503);
+        expect(res.error.code).toBe("INBOUND_SIGNING_NOT_CONFIGURED");
+        expect(res.error.message).not.toMatch(/HOUSEKEEPING_INBOUND_SECRET/); // no config names leaked to callers
+      }
+      expect(await IntegrationRequest.count()).toBe(before); // refused before the idempotency store
+      expect((await unsigned.get("/rooms")).status).toBe(200); // reads are unaffected
+
+      const admin = await new StaffClient(app.base).login("admin", PASSWORDS.admin);
+      const hk = (await admin.get("/admin/integrations")).data.status.clients.find((c) => c.source === "HOUSEKEEPING");
+      expect(hk).toMatchObject({ inboundSigned: false, inboundSigningRequired: true, inboundSecretMissing: true });
+    }).finally(() => {
+      calls = logged.mock.calls.map(([line]) => String(line));
+      logged.mockRestore();
+    });
+    // Each refusal is logged server-side as an error, naming the missing variable.
+    expect(calls.filter((line) => /integration_signing_secret_missing.*HOUSEKEEPING_INBOUND_SECRET/.test(line))).toHaveLength(3);
+  });
+
+  test("systems that are not required to sign are unaffected by a missing secret", async () => {
+    await withoutSecret(true, async () => {
+      // An unsigned Booking write passes the signing stage and reaches validation (422, not 503 / 401).
+      const res = await booking.post("/reservations", {});
+      expect(res.status).toBe(422);
+      expect(res.error.code).toBe("VALIDATION_ERROR");
+    });
+  });
+
+  test("under NODE_ENV=test (enforcement off) a missing secret keeps the previous behaviour", async () => {
+    await withoutSecret(false, async () => {
+      const unsigned = new IntegrationClient(app.base, "housekeeping", process.env.HOUSEKEEPING_API_KEY);
+      const res = await unsigned.post("/cleaning-tasks", { external_task_id: "HK-TESTENV-1", room_number: "101" });
+      expect(res.status).toBe(409); // passed authentication; room 101 is not waiting for cleaning
+      expect(res.error.code).toBe("ROOM_NOT_AWAITING_CLEANING");
+    });
+  });
+
+  test("with the secret configured, unsigned writes are still refused (401)", async () => {
+    const unsigned = new IntegrationClient(app.base, "housekeeping", process.env.HOUSEKEEPING_API_KEY);
+    const res = await unsigned.post("/cleaning-status", { status: "PENDING", external_task_id: "HK-UNSIGNED-1", room_number: "101" });
+    expect(res.status).toBe(401);
+    expect(res.error.code).toBe("SIGNATURE_REQUIRED");
   });
 });

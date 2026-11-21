@@ -53,7 +53,7 @@ On the PMS server the administrator puts these values in `.env`:
 BOOKING_API_KEY=…            BOOKING_WEBHOOK_URL=https://booking.example/webhooks/pms   BOOKING_WEBHOOK_SECRET=…
 POS_API_KEY=…                POS_WEBHOOK_URL=https://pos.example/webhooks/pms           POS_WEBHOOK_SECRET=…
 HOUSEKEEPING_API_KEY=…       HOUSEKEEPING_WEBHOOK_URL=https://hk.example/webhooks/pms   HOUSEKEEPING_WEBHOOK_SECRET=…
-HOUSEKEEPING_INBOUND_SECRET=…   # Housekeeping must sign its requests
+HOUSEKEEPING_INBOUND_SECRET=…   # REQUIRED: Housekeeping must sign its requests; without it its writes get 503 (except NODE_ENV=test)
 HR_API_KEY=…
 ```
 
@@ -109,6 +109,7 @@ X-Signature: sha256=<hex HMAC-SHA256(inbound_secret, `${X-Timestamp}.${raw reque
   - `SIGNATURE_REQUIRED`: headers missing.
   - `INVALID_SIGNATURE`: wrong secret, or the body changed after signing.
   - `SIGNATURE_EXPIRED`: timestamp more than 300 s from the server clock. This blocks replays of captured requests; keep your clock in sync (NTP).
+- **Housekeeping signing is mandatory (fail closed).** If the PMS has no `HOUSEKEEPING_INBOUND_SECRET`, it does not fall back to accepting unsigned requests. Every Housekeeping write is refused with **503 `INBOUND_SIGNING_NOT_CONFIGURED`** until the administrator sets the secret. The PMS also logs an error at startup, and the Admin Console shows "Secret missing: writes refused". Reads (GET) still work. The only exception is the PMS's automated test environment (`NODE_ENV=test`). For other systems, signing applies only once they are given an inbound secret.
 
 ```js
 import crypto from "crypto";
@@ -139,6 +140,7 @@ await fetch(`${PMS}/api/v1/integrations/housekeeping/cleaning-completed`, {
 | 409 | A business rule refused the request; `code` says which (see each section) |
 | 422 | `VALIDATION_ERROR` with per-field `details`, or `IDEMPOTENCY_KEY_REUSED` |
 | 429 | Rate limit (default 120 requests / minute per system); wait `Retry-After` seconds |
+| 503 | `INBOUND_SIGNING_NOT_CONFIGURED`: your writes must be signed but the PMS has no secret for you yet (section 2.4); retry later |
 | 5xx | Unexpected; safe to retry with the same Idempotency-Key |
 
 - **Field names** are `snake_case`.
@@ -328,7 +330,11 @@ HTTP/1.1 201 Created
 
 ## 5. Member 3: Housekeeping System
 
-Base path `/housekeeping`. **Writes must be signed** (section 2.4). Workflow:
+Base path `/housekeeping`. **Writes must be signed** (section 2.4). The PMS refuses unsigned writes and, without `HOUSEKEEPING_INBOUND_SECRET`, refuses all writes.
+
+> **RoomCare: unverified assumption.** The PMS treats RoomCare as this Housekeeping System. RoomCare would use these endpoints, the Housekeeping API key and inbound secret, and the Housekeeping webhooks. **Member 3 has not confirmed this.** Nothing has been renamed and no separate RoomCare credentials exist. See [ROOM_SYNC.md](ROOM_SYNC.md).
+
+Workflow:
 
 1. A guest checks out (or moves rooms). The room becomes **DIRTY** and you receive a **`RoomVacated`** webhook. Create a cleaning task in your own application. Staff, assignments, schedules and progress stay in your system.
 2. *(Optional)* `POST /cleaning-tasks` tells the PMS your `external_task_id` for that room, so the front desk can see the task. The room stays DIRTY.
@@ -348,6 +354,7 @@ Base path `/housekeeping`. **Writes must be signed** (section 2.4). Workflow:
 | POST | `/housekeeping/cleaning-tasks` | *(optional)* register your task for a DIRTY room |
 | POST | `/housekeeping/cleaning-started` | DIRTY → CLEANING |
 | POST | `/housekeeping/cleaning-completed` | → AVAILABLE / RESERVED |
+| POST | `/housekeeping/cleaning-status` | one callback for `status` = `PENDING` / `IN_PROGRESS` / `COMPLETED` (same rules as the three above; intended for RoomCare, see [Cleaning-status callback](#cleaning-status-callback) below) |
 
 ```http
 POST /api/v1/integrations/housekeeping/cleaning-completed
@@ -391,7 +398,7 @@ POST /api/v1/integrations/housekeeping/cleaning-tasks
 | `external_task_id` | Required, your task id, unique; one task belongs to one room |
 | `room_id` / `room_number` | At least one; if you send both they must name the same room |
 | `event_id` | Optional: the `RoomVacated` event this task answers (links the task to the stay). Defaults to the room's latest one |
-| `status` | `COMPLETED` (cleaning-completed only) |
+| `status` | `COMPLETED` (cleaning-completed, required); `PENDING` / `IN_PROGRESS` / `COMPLETED` (cleaning-status, required) |
 | `completed_by` / `started_by` | Your employee id (≤ 60 chars) |
 | `completed_at` (required) / `started_at` (optional, default now) | ISO-8601, not in the future; completion not before the start |
 
@@ -401,13 +408,49 @@ POST /api/v1/integrations/housekeeping/cleaning-tasks
 |---|---|---|
 | 404 | `ROOM_NOT_FOUND` | Unknown room |
 | 409 | `ROOM_MISMATCH` | `room_id` and `room_number` disagree |
-| 409 | `ROOM_NOT_AWAITING_CLEANING` | Room is not DIRTY / CLEANING (e.g. still OCCUPIED, already AVAILABLE, under MAINTENANCE); `details.room_status` |
+| 409 | `ROOM_NOT_AWAITING_CLEANING` | Room is not waiting for cleaning (e.g. still OCCUPIED, already AVAILABLE, or under MAINTENANCE after it was already cleaned); `details.room_status` |
 | 409 | `DUPLICATE_CLEANING_COMPLETION` | This task was already completed (`details` = the stored completion) |
 | 409 | `TASK_ALREADY_STARTED`, `DUPLICATE_TASK`, `TASK_ROOM_MISMATCH` | Repeated start / registration, or the task id belongs to another room |
 | 409 | `TASK_SUPERSEDED` | The front desk marked the room clean manually first (you also received `RoomCleaned` with `origin: "FRONT_DESK"`) |
 | 401 | `SIGNATURE_*` | See section 2.4 |
+| 503 | `INBOUND_SIGNING_NOT_CONFIGURED` | The PMS has no `HOUSEKEEPING_INBOUND_SECRET`; nothing was changed. Retry later |
 
 > **The front desk fallback.** If your system cannot report a cleaning (e.g. it is down), the front desk can mark the room clean. The room becomes ready, any open task for it becomes `SUPERSEDED`, and you receive `RoomCleaned` with `origin: "FRONT_DESK"` so you can close your task.
+
+> **Rooms under maintenance.** If a room goes into MAINTENANCE while it is DIRTY or CLEANING, it **still needs cleaning**. The administrator cannot make it AVAILABLE until a cleaning is recorded (`409 ROOM_NEEDS_CLEANING`). A room with an open cleaning task cannot become AVAILABLE either. You may keep reporting that room's task while it is under maintenance (`PENDING` / `IN_PROGRESS` / `COMPLETED`). The PMS records it and the room **stays MAINTENANCE**. A completion clears the cleaning requirement, and `RoomCleaned` is published with `room_status: "MAINTENANCE"`. The administrator then ends maintenance (→ AVAILABLE / RESERVED). Alternatively, the administrator returns the room as DIRTY and you clean it as usual. Open tasks are never closed automatically. Only your verified completion, or the front desk's explicit "Mark clean", closes them.
+
+### Cleaning-status callback
+
+`POST /api/v1/integrations/housekeeping/cleaning-status` reports every change of one cleaning task. It is intended for RoomCare, on the unverified assumption that RoomCare is this Housekeeping System. It applies exactly the rules of `/cleaning-tasks`, `/cleaning-started` and `/cleaning-completed`.
+
+**Authentication (all required on every call):**
+
+| Header | Value |
+|---|---|
+| `X-Api-Key` (or `Authorization: Bearer …`) | The Housekeeping API key (`HOUSEKEEPING_API_KEY` on the PMS). The key must hold the `housekeeping:write` scope; the Housekeeping key does. |
+| `Idempotency-Key` | 8–100 characters (`A–Z a–z 0–9 . _ : -`). Reuse it when you retry the same call |
+| `X-Timestamp` | Unix seconds, within ±300 s of the PMS clock |
+| `X-Signature` | `sha256=` + hex HMAC-SHA256(`HOUSEKEEPING_INBOUND_SECRET`, `` `${X-Timestamp}.${raw body}` ``) (section 2.4) |
+
+Unsigned or wrongly signed calls are refused with `401 SIGNATURE_REQUIRED` / `INVALID_SIGNATURE` / `SIGNATURE_EXPIRED`. If the PMS has no inbound secret configured, every call is refused with `503 INBOUND_SIGNING_NOT_CONFIGURED`. Production also requires HTTPS (`403 HTTPS_REQUIRED`).
+
+**Supported identifiers and fields:**
+
+| Field | Required | Rules |
+|---|---|---|
+| `status` | always | `PENDING`, `IN_PROGRESS` or `COMPLETED` (case-insensitive). Anything else gets `422 VALIDATION_ERROR` |
+| `external_task_id` | always | Your task id, ≤ 100 chars, `A–Z a–z 0–9 . _ : -`. Unique across all rooms, and one task belongs to one room |
+| `room_id` | one of `room_id` / `room_number` | The **Frontdesk** room id (integer ≥ 1), as sent in `RoomVacated.room_id` |
+| `room_number` | one of `room_id` / `room_number` | The Frontdesk room number (≤ 10 chars). If you send both, they must name the same room (`409 ROOM_MISMATCH`) |
+| `event_id` | no | The `RoomVacated` `event_id` this task answers (≤ 30 chars). Defaults to the room's latest one |
+| `assigned_to` | no (`PENDING`) | Your employee id (≤ 60 chars) |
+| `started_by` / `started_at` | `started_by` required for `IN_PROGRESS` | Employee id. ISO-8601 timestamp, not in the future, defaults to now |
+| `completed_by` / `completed_at` | both required for `COMPLETED` | Employee id. ISO-8601 timestamp, not in the future, not before `started_at` |
+| `remarks` | no | ≤ 500 chars |
+
+`roomcare_room_id` is **not** an accepted identifier. It is sent *to* you in webhooks, but callbacks must name the room with the Frontdesk `room_id` or `room_number`. Unknown fields are ignored.
+
+**Answer:** `PENDING` → `201`; `IN_PROGRESS` / `COMPLETED` → `200`. The body is the task as shown above, plus `cleaning_status`. The errors are those of the three endpoints (table above). A repeat with the same Idempotency-Key replays the first answer. A second completion of the same task under a new key gets `409 DUPLICATE_CLEANING_COMPLETION`.
 
 ---
 
@@ -455,10 +498,12 @@ app.post("/webhooks/pms", express.raw({ type: "application/json" }), (req, res) 
 | `GuestCheckedIn` | Booking (its bookings only), POS | `reservation_id`, `reservation_code`, `external_reservation_id`, `source` (`BOOKING` / `FRONT_DESK`), `status`, `guest_id`, `guest_display_name`, `room_id`, `room_number`, `room_type`, `stay_id`, `check_in_date`, `check_out_date`, `checked_in_at`, `number_of_guests`, `origin` |
 | `GuestCheckedOut` | Booking (its bookings only), POS | as above + `checked_out_at` + `folio { currency, room_charges, restaurant_charges, other_charges, adjustments, total_charges, payments, balance }` |
 | `ReservationUpdated` / `ReservationCancelled` | Booking (its bookings, changes made by the front desk) | reservation fields (as above, without stay fields) |
-| `RoomVacated` | Housekeeping | `reservation_id`, `reservation_code`, `stay_id`, `room_id`, `room_number`, `room_type`, `guest_id`, `checkout_time`, `reason` (`CHECKOUT` / `ROOM_MOVE`) |
-| `RoomStatusChanged` | Housekeeping | `room_id`, `room_number`, `from_status`, `to_status`, `reason`, `source`, `reference` |
-| `RoomCleaned` | Housekeeping | `room_id`, `room_number`, `room_status`, `external_task_id`, `completed_by`, `completed_at`, `origin` (`HOUSEKEEPING` / `FRONT_DESK`) |
-| `ReservationCreated`, `RoomChargePosted`, `GuestFolioUpdated`, `CleaningTaskCreated`, `CleaningStarted`, `CleaningCompleted` | nobody by default; recorded in the PMS event log | |
+| `RoomVacated` | Housekeeping | `reservation_id`, `reservation_code`, `stay_id`, `room_id`, `room_number`, `room_type`, `guest_id`, `checkout_time`, `reason` (`CHECKOUT` / `ROOM_MOVE`), `room_status` (`DIRTY`), `cleaning_status` (`PENDING`), `message` (text for housekeeping staff), `roomcare_room_id`¹ |
+| `RoomStatusChanged` | Housekeeping | `room_id`, `room_number`, `from_status`, `to_status`, `reason`, `source`, `reference`, `roomcare_room_id`¹ |
+| `RoomCleaned` | Housekeeping | `room_id`, `room_number`, `room_status` (`AVAILABLE` / `RESERVED`, or `MAINTENANCE` when the cleaning was recorded during maintenance), `external_task_id`, `completed_by`, `completed_at`, `origin` (`HOUSEKEEPING` / `FRONT_DESK`), `roomcare_room_id`¹ |
+| `ReservationCreated`, `RoomChargePosted`, `GuestFolioUpdated`, `CleaningTaskCreated`, `CleaningStarted`, `CleaningCompleted`, `RoomCreated`, `RoomUpdated`, `RoomArchived`, `RoomRestored` | nobody by default; recorded in the PMS event log (room catalogue events drive room sync, [ROOM_SYNC.md](ROOM_SYNC.md)) | |
+
+¹ `roomcare_room_id`: RoomCare's own id for the room (string), or `null` until room sync has mapped the room ([ROOM_SYNC.md](ROOM_SYNC.md)). It is added to **every** webhook the Housekeeping target receives for a room (`RoomVacated`, `RoomStatusChanged`, `RoomCleaned`), and is not sent to any other system. It is informational: callbacks must still identify the room by `room_id` / `room_number`. It is sent on the Housekeeping target because RoomCare is assumed to be the Housekeeping System. That assumption is **unverified** and awaits Member 3's confirmation.
 
 A system can be subscribed to a different set of events with `<SYSTEM>_WEBHOOK_EVENTS=GuestCheckedIn,RoomStatusChanged,…`.
 
@@ -548,6 +593,7 @@ A suggested check: `task_status = COMPLETED`, the same room, `completed_by = emp
 - Any other change is refused (409 `INVALID_ROOM_STATUS_TRANSITION`).
 - Every change is logged (from, to, reason, source system or staff member, external reference) and published as `RoomStatusChanged`.
 - A room never goes from OCCUPIED straight to AVAILABLE: after checkout it waits for housekeeping.
+- **Maintenance does not skip cleaning.** A room that enters MAINTENANCE from DIRTY or CLEANING keeps its cleaning requirement. MAINTENANCE → AVAILABLE / RESERVED is refused (409 `ROOM_NEEDS_CLEANING`) while that requirement is pending or any cleaning task for the room is open. Only a verified housekeeping completion or the front desk's "Mark clean" clears it (section 5). A clean room that enters and leaves maintenance is unaffected.
 - **Room status is not availability.** Whether a room can be booked for given dates is always computed from reservation dates. A room RESERVED for December can still be sold for tonight.
 - **Reservation status** (CONFIRMED → CHECKED_IN → CHECKED_OUT, or CANCELLED) is managed separately from room status.
 

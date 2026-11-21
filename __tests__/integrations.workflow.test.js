@@ -289,13 +289,19 @@ describe("Room status lifecycle rules", () => {
     ctx.occupiedRoom = occupied.room;
   });
 
-  test("maintenance: DIRTY → MAINTENANCE → back in service as DIRTY or ready", async () => {
+  // Previously this test ended with MAINTENANCE → AVAILABLE succeeding for a room that was DIRTY when
+  // maintenance started (the housekeeping bypass). The cleaning requirement now survives maintenance.
+  test("maintenance: back in service as DIRTY; a DIRTY room under maintenance cannot be made ready without cleaning", async () => {
     const r102 = await room("102");
     expect(r102.status).toBe("AVAILABLE");
     expect((await admin.patch(`/admin/rooms/${r102.id}`, { status: "MAINTENANCE" })).data.status).toBe("MAINTENANCE");
     expect((await admin.patch(`/admin/rooms/${r102.id}`, { status: "DIRTY" })).data.status).toBe("DIRTY");
     expect((await admin.patch(`/admin/rooms/${r102.id}`, { status: "MAINTENANCE" })).data.status).toBe("MAINTENANCE");
-    expect((await admin.patch(`/admin/rooms/${r102.id}`, { status: "AVAILABLE" })).data.status).toBe("AVAILABLE");
+    const skip = await admin.patch(`/admin/rooms/${r102.id}`, { status: "AVAILABLE" });
+    expect(skip.status).toBe(409);
+    expect(skip.error.code).toBe("ROOM_NEEDS_CLEANING");
+    expect(await roomStatus("102")).toBe("MAINTENANCE");
+    expect((await admin.patch(`/admin/rooms/${r102.id}`, { status: "DIRTY" })).data.status).toBe("DIRTY");
   });
 });
 

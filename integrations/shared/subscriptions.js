@@ -14,10 +14,14 @@
  *
  * Webhook body (flat, like the published examples):
  *   { "event": "RoomVacated", "event_id": "EVT-000042", "occurred_at": "…", …payload fields }
+ * A receiver may get extra fields of its own (`enrich`): Housekeeping receives
+ * `roomcare_room_id` (RoomCare's id for the room, once room sync has mapped it) on
+ * RoomVacated, RoomStatusChanged and RoomCleaned. That RoomCare is the Housekeeping
+ * System is an UNVERIFIED ASSUMPTION pending Member 3's confirmation.
  */
 import crypto from "crypto";
 import { subscribe, EVENTS, EVENT_AGGREGATE } from "../../services/domainEvents.js";
-import { IntegrationEvent, IntegrationOutbox, OUTBOX_STATUS, OUTBOX_TARGETS } from "../../models/index.js";
+import { IntegrationEvent, IntegrationOutbox, ExternalRoomMapping, EXTERNAL_SYSTEMS, OUTBOX_STATUS, OUTBOX_TARGETS } from "../../models/index.js";
 import { clientSettings } from "./clients.js";
 
 export const DEFAULT_SUBSCRIPTIONS = Object.freeze({
@@ -27,7 +31,14 @@ export const DEFAULT_SUBSCRIPTIONS = Object.freeze({
     filter: (payload) => payload.source === "BOOKING" && payload.origin !== "BOOKING",
   },
   [OUTBOX_TARGETS.POS]: { events: [EVENTS.GUEST_CHECKED_IN, EVENTS.GUEST_CHECKED_OUT, EVENTS.POS_ORDER_REVIEWED] },
-  [OUTBOX_TARGETS.HOUSEKEEPING]: { events: [EVENTS.ROOM_VACATED, EVENTS.ROOM_STATUS_CHANGED, EVENTS.ROOM_CLEANED] },
+  [OUTBOX_TARGETS.HOUSEKEEPING]: {
+    events: [EVENTS.ROOM_VACATED, EVENTS.ROOM_STATUS_CHANGED, EVENTS.ROOM_CLEANED],
+    enrich: async (body, transaction) => {
+      if (!body.room_id) return body;
+      const mapping = await ExternalRoomMapping.findOne({ where: { sourceSystem: EXTERNAL_SYSTEMS.ROOMCARE, roomId: body.room_id }, attributes: ["externalRoomId"], transaction });
+      return { ...body, roomcare_room_id: mapping?.externalRoomId ?? null };
+    },
+  },
 });
 
 export const subscribedEvents = (target) => {
@@ -63,8 +74,9 @@ export async function publishEvent(eventType, payload, transaction) {
 
   const body = { event: eventType, event_id: eventId, occurred_at: occurredAt.toISOString(), ...payload };
   for (const target of receivers(eventType, payload)) {
+    const { enrich } = DEFAULT_SUBSCRIPTIONS[target];
     await IntegrationOutbox.create(
-      { integrationEventId: event.id, target, eventType, payload: body, status: OUTBOX_STATUS.PENDING, nextAttemptAt: occurredAt },
+      { integrationEventId: event.id, target, eventType, payload: enrich ? await enrich(body, transaction) : body, status: OUTBOX_STATUS.PENDING, nextAttemptAt: occurredAt },
       { transaction }
     );
   }

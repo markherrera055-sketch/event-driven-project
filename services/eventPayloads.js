@@ -58,7 +58,17 @@ export const guestCheckedOutData = (stay, reservation, room, guest, folio) => ({
   folio: folioSummaryData(folio),
 });
 
-/** Sent to Housekeeping so it can create a cleaning task. reason: CHECKOUT | ROOM_MOVE */
+/** Human-readable cleaning request shown to housekeeping staff (RoomCare). */
+export const cleaningMessage = (roomNumber, reason) =>
+  reason === "ROOM_MOVE"
+    ? `Room ${roomNumber} needs cleaning. The guest moved to another room. Please prepare the room for the next guest.`
+    : `Room ${roomNumber} needs cleaning. A guest has checked out. Please prepare the room for the next guest.`;
+
+/**
+ * Sent to Housekeeping / RoomCare so it can create a cleaning task.
+ * reason: CHECKOUT | ROOM_MOVE. The room is DIRTY (vacant, needs cleaning) when this is published;
+ * cleaning_status is always PENDING here (RoomCare reports IN_PROGRESS / COMPLETED back).
+ */
 export const roomVacatedData = ({ reservation, stay, room, at, reason }) => ({
   reservation_id: reservation.id,
   reservation_code: reservation.reservationCode,
@@ -69,6 +79,25 @@ export const roomVacatedData = ({ reservation, stay, room, at, reason }) => ({
   guest_id: reservation.guestId,
   checkout_time: at,
   reason,
+  room_status: room.status,
+  cleaning_status: "PENDING",
+  message: cleaningMessage(room.roomNumber, reason),
+});
+
+/**
+ * Room catalogue change (RoomCreated / RoomUpdated / RoomArchived / RoomRestored).
+ * Only identifies the room and what changed: receivers of the room sync read the
+ * room's current state when they are sent (integrations/roomSync).
+ */
+export const roomCatalogData = (room, { changes = [], actor } = {}) => ({
+  origin: "FRONT_DESK",
+  room_id: room.id,
+  room_number: room.roomNumber,
+  room_type: room.roomType,
+  is_active: !!room.isActive,
+  archived: !!room.archivedAt,
+  changes,
+  changed_by: actor?.id ?? null,
 });
 
 export const roomStatusChangedData = (room, from, to, { reason, source, reference }) => ({

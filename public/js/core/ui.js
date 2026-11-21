@@ -85,6 +85,10 @@ const BADGE = {
   ONLINE_RESERVATION_NEW: "green", ONLINE_RESERVATION_UPDATED: "blue", ONLINE_RESERVATION_CANCELLED: "plain",
   ROOM_CONFLICT: "red", SYNC_FAILED: "red", ACKNOWLEDGED: "green", UPDATED: "blue",
   WEBHOOK_FAILED: "red", WEBHOOK_PENDING: "amber", LOCAL_CONFIRMED: "amber", ADMIN_CONFIRMED: "green", ONLINE_HOLD: "amber",
+  // Room synchronisation (OnlineBooking / RoomCare) and cleaning notifications
+  SYNCED: "green", BLOCKED: "amber", SUPERSEDED: "plain", STAYBOOK: "violet", ROOMCARE: "amber",
+  CONNECTED: "green", ERROR: "red", AWAITING_CONTRACT: "amber", NOT_CONFIGURED: "plain", UNKNOWN: "plain",
+  IN_PROGRESS: "sky", COMPLETED: "green", COMPLETED_AT_FRONT_DESK: "green", VACANT_DIRTY: "amber", VACANT_CLEAN: "green", OUT_OF_ORDER: "red",
 };
 export const badge = (status, text) => {
   const tone = BADGE[status] || "plain";

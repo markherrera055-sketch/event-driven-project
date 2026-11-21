@@ -1,8 +1,13 @@
 import { DataTypes } from "sequelize";
 import { sequelize } from "./db.js";
 
-/** External systems whose room ids are mapped onto PMS rooms. */
-export const EXTERNAL_SYSTEMS = Object.freeze({ STAYBOOK: "STAYBOOK" });
+/**
+ * External systems whose room ids are mapped onto PMS rooms.
+ *   STAYBOOK  OnlineBooking (Member 1): set by an administrator, or by room sync when StayBook returns its id
+ *   ROOMCARE  RoomCare: set by room sync from RoomCare's answer. Assumed (NOT yet confirmed by
+ *             Member 3) to be the Housekeeping System; see docs/ROOM_SYNC.md.
+ */
+export const EXTERNAL_SYSTEMS = Object.freeze({ STAYBOOK: "STAYBOOK", ROOMCARE: "ROOMCARE" });
 
 /**
  * ExternalRoomMapping — explicit link between a room id in another system

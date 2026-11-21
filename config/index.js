@@ -101,6 +101,9 @@ export const config = {
     requireHttps: bool(process.env.INTEGRATION_REQUIRE_HTTPS, isProduction),
     // Max clock difference accepted on signed inbound requests (replay window).
     signatureToleranceSeconds: int(process.env.INTEGRATION_SIGNATURE_TOLERANCE_SECONDS, 300),
+    // Systems marked inboundSigningRequired (Housekeeping) must have their <SYSTEM>_INBOUND_SECRET set:
+    // without it their writes are refused (503) instead of accepted unsigned. Off only under NODE_ENV=test.
+    enforceRequiredSigning: env !== "test",
     // StayBook online booking (calls in with the BOOKING key, see integrations/staybook).
     staybook: {
       // StayBook's id for THIS hotel. When set, bookings for any other StayBook hotel are refused.
@@ -112,6 +115,18 @@ export const config = {
       restaurantIds: list(process.env.POS_RESTAURANT_IDS),
       // Used when the POS does not send restaurant_id (single-restaurant hotels).
       defaultRestaurantId: process.env.POS_DEFAULT_RESTAURANT_ID?.trim() || "MAIN",
+    },
+    // Room catalogue sync: Frontdesk → OnlineBooking (StayBook) and RoomCare (docs/ROOM_SYNC.md).
+    // A target is enabled when its API URL is set. Requests are only sent once the receiver's API
+    // contract is implemented in integrations/roomSync/adapters.js; until then jobs wait as BLOCKED.
+    roomSync: {
+      intervalMs: int(process.env.ROOM_SYNC_INTERVAL_MS, int(process.env.INTEGRATION_OUTBOX_INTERVAL_MS, 15000)),
+      maxAttempts: int(process.env.ROOM_SYNC_MAX_ATTEMPTS, 8),
+      timeoutMs: int(process.env.ROOM_SYNC_TIMEOUT_MS, 10000),
+      targets: {
+        STAYBOOK: { baseUrl: process.env.STAYBOOK_API_URL?.trim() || "", token: process.env.STAYBOOK_API_TOKEN || "" },
+        ROOMCARE: { baseUrl: process.env.ROOMCARE_API_URL?.trim() || "", token: process.env.ROOMCARE_API_TOKEN || "" },
+      },
     },
     // One entry per external system. An empty API key disables that system.
     clients: {

@@ -3,12 +3,16 @@
  * (Guest Booking, Restaurant POS, Housekeeping, HR/Payroll).
  * Shows configuration status (never the keys), the outbound webhook log with
  * a manual retry, and the inbound request log.
+ * Room synchronisation: OnlineBooking / RoomCare connection status, room sync
+ * jobs (retry, "sync all rooms") and the checkout → RoomCare cleaning
+ * notification history (docs/ROOM_SYNC.md).
  */
 import "../core/shell.js";
 import { api } from "../core/api.js";
-import { $, html, setHTML, dateTime, badge, errorHTML, emptyHTML, withBusy, toast, toastError, openModal, confirmDialog } from "../core/ui.js";
+import { $, html, setHTML, dateTime, badge, label, errorHTML, emptyHTML, withBusy, toast, toastError, openModal, confirmDialog } from "../core/ui.js";
 
 const root = $("#page-root");
+let syncFilter = "";
 
 const yesNo = (v, yes = "Configured", no = "Not configured") => (v ? html`<span class="badge badge-green">${yes}</span>` : html`<span class="badge">${no}</span>`);
 
@@ -17,7 +21,11 @@ const clientCard = (c, status) => html`<div class="card"><div class="card-head">
     <dt>Base URL</dt><dd class="mono">${c.basePath}</dd>
     <dt>API key</dt><dd>${yesNo(c.enabled)}</dd>
     <dt>Permissions</dt><dd class="mono small">${c.scopes.join(", ")}</dd>
-    <dt>Signed requests in</dt><dd>${yesNo(c.inboundSigned, "Required (HMAC)", "Not required")}</dd>
+    <dt>Signed requests in</dt><dd>${
+      c.inboundSecretMissing
+        ? html`<span class="badge badge-red">Secret missing: writes refused</span> <span class="mono small">${c.source}_INBOUND_SECRET</span>`
+        : yesNo(c.inboundSigned, "Required (HMAC)", "Not required")
+    }</dd>
     <dt>Webhooks out</dt><dd>${c.webhookConfigured ? html`${yesNo(true)} ${yesNo(c.webhookSigned, "HMAC-SHA256", "Unsigned")}` : yesNo(false)}</dd>
     <dt>Events</dt><dd class="small">${c.webhookEvents.length ? c.webhookEvents.join(", ") : html`<span class="muted">none (reads from the PMS)</span>`}</dd>
     <dt>Rate limit</dt><dd>${status.rateLimitPerMinute} requests / minute</dd></dl></div></div>`;
@@ -54,6 +62,57 @@ const staybookIssuesCard = (issues) => html`<div class="card"><div class="card-h
       : html`<div class="card-body muted small">No refused StayBook requests.</div>`
   }</div></div>`;
 
+const CONNECTION_TEXT = { CONNECTED: "Connected", ERROR: "Errors", AWAITING_CONTRACT: "Awaiting API contract", NOT_CONFIGURED: "Not configured", UNKNOWN: "No requests yet" };
+const WEBHOOK_LABEL = { STAYBOOK: "Reservation webhooks", ROOMCARE: "Cleaning notifications" };
+const connectionBadge = (c) => badge(c, CONNECTION_TEXT[c] || c);
+
+/** One receiving system of the room catalogue (OnlineBooking or RoomCare). */
+const syncTargetCard = (t, webhook) => html`<div class="card"><div class="card-head"><h2>${t.label} <span class="muted small">· room sync</span></h2>${connectionBadge(t.connection)}</div>
+  <div class="card-body">
+    ${t.configured && !t.contractReady ? html`<div class="alert alert-warning">No room data is sent to ${t.label} yet because its room API contract has not been provided. Room changes wait as <b>Blocked</b> jobs and are sent automatically once the adapter is implemented.</div>` : ""}
+    <dl class="dl">
+      <dt>API URL</dt><dd>${t.configured ? yesNo(true) : html`<span class="badge">Not set</span> <span class="mono small">${t.urlVariable}</span>`}</dd>
+      <dt>API contract</dt><dd>${t.contractReady ? yesNo(true, "Implemented") : html`<span class="badge badge-amber">Pending</span>`}</dd>
+      <dt>Last successful sync</dt><dd>${dateTime(t.lastSuccessAt)}</dd>
+      <dt>Last attempt</dt><dd>${dateTime(t.lastAttemptAt)}</dd>
+      ${t.lastError ? html`<dt>Last error</dt><dd class="small">${t.lastError}</dd>` : ""}
+      <dt>Rooms mapped</dt><dd>${t.mappedRooms} of ${t.activeRooms}</dd>
+      <dt>Jobs</dt><dd class="small">${t.counts.PENDING} pending · ${t.counts.BLOCKED} blocked · ${t.counts.FAILED} failed · ${t.counts.SYNCED} synced</dd>
+      ${webhook ? html`<dt>${WEBHOOK_LABEL[t.target]}</dt><dd class="small">${connectionBadge(webhook.connection)} ${webhook.pending} pending · ${webhook.failed} failed · last delivered ${dateTime(webhook.lastSuccessAt)}${webhook.lastError ? html`<br><span class="muted">${webhook.lastError}</span>` : ""}</dd>` : ""}
+    </dl>
+    ${t.missing.length ? html`<details class="small"><summary>What ${t.label} still has to provide (${t.missing.length})</summary><ul>${t.missing.map((m) => html`<li>${m}</li>`)}</ul></details>` : ""}
+  </div>
+  <div class="card-body"><button class="btn btn-sm" data-resync="${t.target}" data-label="${t.label}" ${t.configured ? "" : "disabled"} title="${t.configured ? "Queue every room for this system" : `Set ${t.urlVariable} first`}">Sync all rooms</button></div></div>`;
+
+const SYNC_FILTERS = ["", "PENDING", "BLOCKED", "FAILED", "SYNCED", "SUPERSEDED"];
+const syncHistoryCard = (jobs) => html`<div class="card"><div class="card-head"><h2>Room synchronisation history</h2>
+  <select id="sync-status-filter" class="select-auto" aria-label="Filter by status">${SYNC_FILTERS.map((s) => html`<option value="${s}" ${s === syncFilter ? "selected" : ""}>${s ? label(s) : "All statuses"}</option>`)}</select></div>
+  <div class="card-body flush">${
+    jobs.length
+      ? html`<div class="table-wrap"><table class="table"><thead><tr><th>#</th><th>Room</th><th>System</th><th>Operation</th><th>Change</th><th>Status</th><th>Attempts</th><th>External id</th><th>HTTP</th><th>Last error</th><th>Updated</th><th></th></tr></thead><tbody>
+        ${jobs.map((j) => html`<tr><td>${j.id}</td><td class="mono">${j.roomNumber}</td><td>${badge(j.target)}</td><td class="mono small">${j.operation}</td><td class="small">${j.trigger}</td>
+          <td>${badge(j.status)}</td><td class="num">${j.attempts}</td><td class="mono small">${j.externalRoomId || ""}</td><td>${j.lastResponseStatus ?? ""}</td>
+          <td class="small">${j.lastError || ""}</td><td class="nowrap">${dateTime(j.updatedAt)}</td>
+          <td class="right">${j.status === "FAILED" || j.status === "BLOCKED" ? html`<button class="btn btn-sm" data-retry-sync="${j.id}">Retry</button>` : ""}</td></tr>`)}
+        </tbody></table></div>`
+      : emptyHTML(syncFilter ? "No room sync jobs with this status" : "No room sync jobs yet. They appear when a room is created or edited while a system's API URL is configured.")
+  }</div></div>`;
+
+const cleaningCard = (data) => html`<div class="card"><div class="card-head"><h2>Cleaning notifications <span class="muted small">· checkout → RoomCare</span></h2>${connectionBadge(data.roomcare.connection)}</div>
+  <div class="card-body"><p class="muted small">After each checkout the room becomes <b>Vacant dirty</b> and RoomCare is notified (<code>RoomVacated</code>, retried until delivered). The room is ready for the next guest only after RoomCare reports the cleaning <b>Completed</b> (or the front desk marks it clean).</p>
+    <p class="muted small"><b>Unconfirmed assumption:</b> RoomCare is treated as the Housekeeping System (Member 3). These notifications use the Housekeeping webhook settings (<code>HOUSEKEEPING_WEBHOOK_URL</code>) until Member 3 confirms that the two are the same system.</p></div>
+  <div class="card-body flush">${
+    data.notifications.length
+      ? html`<div class="table-wrap"><table class="table"><thead><tr><th>Event</th><th>Room</th><th>Reason</th><th>Checked out</th><th>Delivery</th><th>HTTP</th><th>Cleaning</th><th>Room now</th><th></th></tr></thead><tbody>
+        ${data.notifications.map((n) => html`<tr><td class="mono small">${n.eventId}</td><td class="mono">${n.roomNumber}${n.roomcareRoomId ? html` <span class="muted small">(RoomCare ${n.roomcareRoomId})</span>` : ""}</td>
+          <td class="small">${n.reason || ""} ${n.reservationCode ? html`<span class="mono muted">${n.reservationCode}</span>` : ""}</td><td class="nowrap">${dateTime(n.checkoutTime)}</td>
+          <td>${n.delivery ? html`${badge(n.delivery.status)} <span class="muted small">×${n.delivery.attempts}</span>${n.delivery.lastError ? html`<br><span class="small muted">${n.delivery.lastError}</span>` : ""}` : html`<span class="muted small">not sent (no webhook URL)</span>`}</td>
+          <td>${n.delivery?.lastResponseStatus ?? ""}</td><td>${badge(n.cleaningStatus)}</td><td>${n.occupancyStatus ? badge(n.occupancyStatus) : ""}</td>
+          <td class="right">${n.delivery && (n.delivery.status === "FAILED" || n.delivery.status === "SKIPPED") ? html`<button class="btn btn-sm" data-retry="${n.delivery.id}">Re-send</button>` : ""}</td></tr>`)}
+        </tbody></table></div>`
+      : emptyHTML("No checkouts yet")
+  }</div></div>`;
+
 /** Restaurant POS purchase notifications (front-desk review queue). Configuration lives in .env. */
 const posOrdersCard = (p, sum) => html`<div class="card"><div class="card-head"><h2>Restaurant POS purchases <span class="muted small">· front-desk review</span></h2>${yesNo(p.enabled, "Enabled", "Disabled")}</div>
   <div class="card-body">
@@ -68,18 +127,33 @@ const posOrdersCard = (p, sum) => html`<div class="card"><div class="card-head">
       <dt>Legacy direct posting</dt><dd class="small"><span class="mono">POST /pos/room-charges</span> is deprecated but still accepted (no staff review). An order is never billed twice across both paths.</dd>
     </dl></div></div>`;
 
+/** Loads one section without failing the whole page: resolves to { data } or { error }. */
+const section = (promise) => promise.then((data) => ({ data }), (error) => ({ error }));
+
+/** Shown in place of a section whose data could not be loaded (never hidden silently). */
+const sectionError = (title, err) => html`<div class="card"><div class="card-head"><h2>${title}</h2><span class="badge badge-red">Not loaded</span></div>
+  <div class="card-body">${errorHTML(err)}<p class="muted small">This section could not be loaded, so its status is unknown. The rest of the page is unaffected.</p>
+  <button class="btn btn-sm" data-reload>Try again</button></div></div>`;
+
 async function load() {
   try {
-    const [{ status, outbox, requests }, mapping, posSummary, staybookIssues] = await Promise.all([
+    const [{ status, outbox, requests }, mapping, posSummary, staybookIssues, roomSync, cleaning] = await Promise.all([
       api.get("/admin/integrations"),
       api.get("/admin/staybook/room-mappings"),
       api.get("/pos-orders/summary").catch(() => null),
       api.get("/admin/staybook/sync-issues").catch(() => null),
+      section(api.get(`/admin/integrations/room-sync${syncFilter ? `?status=${syncFilter}` : ""}`)),
+      section(api.get("/admin/integrations/cleaning-notifications")),
     ]);
     setHTML(
       root,
       html`<div class="alert alert-info">The Guest Booking System, Restaurant POS, Housekeeping System and HR/Payroll are separate applications. They connect to this PMS through authenticated endpoints under <code>/api/v1/integrations</code>. Keys, secrets and webhook URLs are configured in the server's <code>.env</code> file (see docs/INTEGRATIONS.md).${status.requireHttps ? "" : " HTTPS is not enforced on this server (development)."}</div>
       <div class="grid grid-2">${status.clients.map((c) => clientCard(c, status))}</div>
+      ${roomSync.error
+        ? sectionError("Room synchronisation", roomSync.error)
+        : html`<div class="grid grid-2">${roomSync.data.targets.map((t) => syncTargetCard(t, roomSync.data.webhooks[t.target]))}</div>
+        ${syncHistoryCard(roomSync.data.jobs)}`}
+      ${cleaning.error ? sectionError("Cleaning notifications", cleaning.error) : cleaningCard(cleaning.data)}
       ${posOrdersCard(status.posOrders, posSummary)}
       ${staybookCard(status, mapping)}
       ${staybookIssues ? staybookIssuesCard(staybookIssues) : ""}
@@ -133,7 +207,41 @@ async function unmapRoom(btn) {
   }
 }
 
+async function resync(btn) {
+  const { resync: target, label: name } = btn.dataset;
+  if (!(await confirmDialog(`Queue every room for ${name}? Rooms it already has are updated, new ones are created. Nothing is deleted.`, { confirmLabel: "Sync all rooms" }))) return;
+  try {
+    const r = await withBusy(btn, () => api.post("/admin/integrations/room-sync/resync", { target }));
+    toast(r.blocked ? `${r.queued} room(s) queued. Not sent yet: ${r.blocked}` : `${r.queued} room(s) queued for ${name}.`, r.blocked ? "warning" : "success");
+    load();
+  } catch (err) {
+    toastError(err);
+  }
+}
+
+async function retrySync(btn) {
+  try {
+    const job = await withBusy(btn, () => api.post(`/admin/integrations/room-sync/${btn.dataset.retrySync}/retry`));
+    const done = job.status === "SYNCED";
+    toast(done ? `Room ${job.roomNumber} synchronised.` : `Room ${job.roomNumber}: ${label(job.status)}${job.lastError ? ` (${job.lastError})` : ""}`, done ? "success" : "warning");
+    load();
+  } catch (err) {
+    toastError(err);
+  }
+}
+
+root.addEventListener("change", (e) => {
+  if (e.target.id !== "sync-status-filter") return;
+  syncFilter = e.target.value;
+  load();
+});
+
 root.addEventListener("click", async (e) => {
+  if (e.target.closest("[data-reload]")) return load();
+  const resyncBtn = e.target.closest("[data-resync]");
+  if (resyncBtn) return resync(resyncBtn);
+  const syncBtn = e.target.closest("[data-retry-sync]");
+  if (syncBtn) return retrySync(syncBtn);
   const mapBtn = e.target.closest("[data-map-room]");
   if (mapBtn) return mapRoom(mapBtn);
   const unmapBtn = e.target.closest("[data-unmap]");

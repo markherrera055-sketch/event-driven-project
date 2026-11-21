@@ -29,7 +29,7 @@ npm start                       # http://localhost:3000
 | `npm run migrate` | Create database/tables/view if missing and add new columns to existing tables — **non-destructive, safe to re-run** |
 | `npm run migrate -- --seed` | …and insert sample rooms + staff (only into empty tables) |
 | `npm run migrate:fresh` | **Drop and recreate all tables** + seed (development only; asks to confirm) |
-| `npm test` | Jest: 192 automated tests against a separate `FrontDesk_test` database |
+| `npm test` | Jest: 362 automated tests against a separate `FrontDesk_test` database |
 | `npm run backup` | `mysqldump` snapshot to `backups/` with 14-day retention (Figure 4 "nightly backup") |
 | `npm run route:list` | Print all registered routes |
 | `npm run run` / `npm run dist` | Electron desktop shell / build installer (unchanged from XianFire) |
@@ -47,7 +47,8 @@ integrations/        the other members' systems — kept separate from the core
   shared/            client registry + scopes, API-key / signature auth, idempotency, event log + outbox, webhook delivery
   booking/           Member 1 Guest Booking System (reservations, availability, room types)
   pos/               Member 4 Restaurant POS (purchase notifications for front-desk review; legacy charge to room)
-  housekeeping/      Member 3 Housekeeping System (cleaning started / completed, room board)
+  housekeeping/      Member 3 Housekeeping System (cleaning status, room board, cleaning notification log; assumed, not yet confirmed, to be RoomCare)
+  roomSync/          room catalogue sync to OnlineBooking and RoomCare (queue, worker, per-system adapters)
   hr/                Member 5 HR and Payroll (read-only verification of housekeeping tasks)
   paymentGateway/    Payment Gateway Adapter (sandbox driver)
 middleware/          session auth + roles, CSRF, rate limiting, errors, DB session store
@@ -65,6 +66,7 @@ docs/                architecture, API reference, integration guide, Postman col
 - [docs/API.md](docs/API.md): staff REST API reference with request/response examples
 - [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md): how to connect a POS or Hotel Reservation System (auth, idempotency, webhooks)
 - [docs/STAYBOOK.md](docs/STAYBOOK.md): StayBook online booking ↔ Frontdesk integration (room mapping, contract, retries, what StayBook must add)
+- [docs/ROOM_SYNC.md](docs/ROOM_SYNC.md): room synchronisation to OnlineBooking and RoomCare, checkout → cleaning notification, cleaning status callbacks, monitoring, and the API contracts still needed
 - [docs/POS_ORDERS.md](docs/POS_ORDERS.md): Restaurant POS purchase notifications → front-desk review → guest folio (contract, statuses, security, setup, go-live checklist)
 - [docs/postman/HotelFrontDesk-PMS.postman_collection.json](docs/postman/HotelFrontDesk-PMS.postman_collection.json): importable Postman collection
 

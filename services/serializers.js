@@ -61,6 +61,8 @@ export const roomJSON = (r) => {
     archivedAt: x.archivedAt ?? null,
     // Convenience flag for screens: waiting for, or in, housekeeping.
     needsCleaning: x.status === "DIRTY" || x.status === "CLEANING",
+    // Also true for a room that went into MAINTENANCE before it was cleaned (it cannot be made ready yet).
+    cleaningRequired: x.status === "DIRTY" || x.status === "CLEANING" || !!x.cleaningRequired,
     lastCleanedAt: x.lastCleanedAt,
     lastCleanedBy: x.cleaner ? userRef(x.cleaner) : x.lastCleanedBy ?? null,
   };
